@@ -64,6 +64,17 @@ import org.bytedeco.ffmpeg.global.avutil.AVMEDIA_TYPE_VIDEO
 import org.bytedeco.ffmpeg.global.avutil.AV_NOPTS_VALUE
 import org.bytedeco.ffmpeg.global.avutil.AV_PIX_FMT_BGRA
 import org.bytedeco.ffmpeg.global.avutil.av_dict_set
+import org.bytedeco.ffmpeg.global.avutil.AVERROR_EOF
+import org.bytedeco.ffmpeg.global.avutil.av_free
+import org.bytedeco.ffmpeg.global.avutil.av_malloc
+import org.bytedeco.ffmpeg.avformat.AVIOContext
+import org.bytedeco.ffmpeg.avformat.Read_packet_Pointer_BytePointer_int
+import org.bytedeco.ffmpeg.avformat.Seek_Pointer_long_int
+import org.bytedeco.ffmpeg.global.avformat.AVSEEK_SIZE
+import org.bytedeco.ffmpeg.global.avformat.avformat_alloc_context
+import org.bytedeco.ffmpeg.global.avformat.avio_alloc_context
+import org.bytedeco.ffmpeg.global.avformat.avio_context_free
+import org.bytedeco.javacpp.Pointer
 import org.bytedeco.ffmpeg.global.avutil.av_frame_alloc
 import org.bytedeco.ffmpeg.global.avutil.av_frame_free
 import org.bytedeco.ffmpeg.global.avutil.av_image_fill_arrays
@@ -337,18 +348,65 @@ internal class DesktopVideoDecoder {
     var height = 0
         private set
 
-    fun open(url: String, headers: Map<String, String>): Result<Unit> = runCatching {
+    // Read through [DesktopRangeStream] — the Java HTTP stack, in bounded windows — rather than
+    // FFmpeg's own HTTP client: googlevideo throttles or drops open-ended requests, which is the
+    // same reason the audio path reads it this way.
+    private var source: DesktopRangeStream? = null
+    private var avio: AVIOContext? = null
+    private var readPacket: Read_packet_Pointer_BytePointer_int? = null
+    private var seekPacket: Seek_Pointer_long_int? = null
+
+    fun open(url: String, headers: Map<String, String>): Result<Unit> {
+        var last: Result<Unit> = Result.failure(IllegalStateException("could not open the video"))
+        repeat(OPEN_ATTEMPTS) { attempt ->
+            last = openOnce(url, headers)
+            if (last.isSuccess) return last
+            DesktopTrackLog.log("music video: open attempt ${attempt + 1} failed: ${last.exceptionOrNull()?.message}")
+            Thread.sleep(400L * (attempt + 1))
+        }
+        return last
+    }
+
+    private fun windowedContext(url: String, headers: Map<String, String>): AVFormatContext {
+        val stream = DesktopRangeStream(url, headers)
+        val scratch = ByteArray(IO_BUFFER_BYTES)
+        val read = object : Read_packet_Pointer_BytePointer_int() {
+            override fun call(opaque: Pointer?, buffer: BytePointer?, size: Int): Int {
+                if (buffer == null) return AVERROR_EOF
+                val taken = stream.read(scratch, minOf(size, scratch.size))
+                if (taken <= 0) return AVERROR_EOF
+                buffer.put(scratch, 0, taken)
+                return taken
+            }
+        }
+        val seek = object : Seek_Pointer_long_int() {
+            override fun call(opaque: Pointer?, offset: Long, whence: Int): Long {
+                if (whence == AVSEEK_SIZE) return stream.length
+                val target = when (whence) {
+                    SEEK_CUR -> stream.position() + offset
+                    SEEK_END -> stream.length + offset
+                    else -> offset
+                }
+                stream.seek(target)
+                return target
+            }
+        }
+        val buffer = BytePointer(av_malloc(IO_BUFFER_BYTES.toLong()))
+        val io = avio_alloc_context(buffer, IO_BUFFER_BYTES, 0, null, read, null, seek)
+        val context = avformat_alloc_context()
+        context.pb(io)
+        source = stream
+        readPacket = read
+        seekPacket = seek
+        avio = io
+        return context
+    }
+
+    private fun openOnce(url: String, headers: Map<String, String>): Result<Unit> = runCatching {
         DesktopAudioDecoder.ensureNetworkReady()
         val options = AVDictionary(null)
-        if (headers.isNotEmpty()) {
-            av_dict_set(options, "headers", headers.entries.joinToString("") { (k, v) -> "$k: $v\r\n" }, 0)
-        }
-        av_dict_set(options, "rw_timeout", "15000000", 0)
-        av_dict_set(options, "reconnect", "1", 0)
-        av_dict_set(options, "reconnect_streamed", "1", 0)
-
-        val opened = AVFormatContext(null)
-        check(avformat_open_input(opened, url, null, options) >= 0) { "could not open the video" }
+        val opened = windowedContext(url, headers)
+        check(avformat_open_input(opened, null as String?, null, options) >= 0) { "could not open the video" }
         format = opened
         check(avformat_find_stream_info(opened, null as AVDictionary?) >= 0) { "no stream info" }
         streamIndex = av_find_best_stream(opened, AVMEDIA_TYPE_VIDEO, -1, -1, null as org.bytedeco.ffmpeg.avcodec.AVCodec?, 0)
@@ -432,6 +490,15 @@ internal class DesktopVideoDecoder {
         scaler?.let { sws_freeContext(it) }
         codec?.let { avcodec_free_context(it) }
         format?.let { avformat_close_input(it) }
+        avio?.let {
+            av_free(it.buffer())
+            it.buffer(null as BytePointer?)
+            avio_context_free(it)
+        }
+        avio = null
+        source = null
+        readPacket = null
+        seekPacket = null
         buffer?.deallocate()
         strides?.deallocate()
         frame = null
@@ -449,5 +516,9 @@ internal class DesktopVideoDecoder {
 
     private companion object {
         const val MAX_HEIGHT = 1080
+        const val OPEN_ATTEMPTS = 3
+        const val IO_BUFFER_BYTES = 64 * 1024
+        const val SEEK_CUR = 1
+        const val SEEK_END = 2
     }
 }
