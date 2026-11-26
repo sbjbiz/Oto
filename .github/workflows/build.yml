@@ -43,6 +43,14 @@ jobs:
       - name: Build installer and portable app
         run: .\gradlew.bat --stacktrace :desktopApp:packageExe :desktopApp:createDistributable "-Pbitchord.version=${{ steps.version.outputs.value }}"
 
+      - name: Size report
+        shell: bash
+        run: |
+          cd desktopApp/build/compose/binaries/main/app/Oto
+          du -sh . runtime app
+          ls -S -l app | head -25
+          for j in app/*.jar; do n=$(unzip -l "$j" 2>/dev/null | grep -ciE "linux|osx|darwin|macos|aarch64|arm64"); [ "$n" -gt 0 ] && echo "$n non-windows entries in $j"; done; true
+
       - name: Collect
         shell: pwsh
         run: |
