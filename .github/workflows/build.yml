@@ -47,9 +47,8 @@ jobs:
         shell: bash
         run: |
           cd desktopApp/build/compose/binaries/main/app/Oto
-          du -sh . runtime app
-          ls -S -l app | head -25
-          for j in app/*.jar; do n=$(unzip -l "$j" 2>/dev/null | grep -ciE "linux|osx|darwin|macos|aarch64|arm64"); [ "$n" -gt 0 ] && echo "$n non-windows entries in $j"; done; true
+          du -sh . || true
+          ls -S -l app | head -15 || true
 
       - name: Collect
         shell: pwsh

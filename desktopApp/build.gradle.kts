@@ -342,6 +342,69 @@ tasks.named<Jar>("jar") {
     from(kotlinClasses.flatMap { it.destinationDirectory })
 }
 
+/*
+ * Slimming the shipped libraries.
+ *
+ * ONNX Runtime's jar carries its native library for every OS; only the Windows x64 one is kept.
+ * The extended Material icon set is ~37 MB of icons, of which the app uses a handful; only the
+ * icon classes the app's own code actually references are kept, found by reading its bytecode.
+ */
+val slimDir = layout.buildDirectory.dir("slim-libs")
+
+fun isOnnx(file: File) = file.name.startsWith("onnxruntime-")
+fun isIconsExtended(file: File) = file.name.startsWith("material-icons-extended")
+fun isOwnModule(file: File) = file.name.startsWith("desktopUi") || file.name.startsWith("shared")
+
+val slimOnnx by tasks.registering(Jar::class) {
+    val runtime = configurations.named("runtimeClasspath")
+    archiveFileName.set("onnxruntime-windows-x64.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("slim-work"))
+    from({ runtime.get().files.filter(::isOnnx).map { zipTree(it) } }) {
+        exclude("ai/onnxruntime/native/linux-*/**")
+        exclude("ai/onnxruntime/native/osx-*/**")
+        exclude("ai/onnxruntime/native/win-arm64/**")
+        exclude("ai/onnxruntime/native/android*/**")
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+val slimIcons by tasks.registering(Jar::class) {
+    val runtime = configurations.named("runtimeClasspath")
+    val appClasses = tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin")
+        .flatMap { it.destinationDirectory }
+    dependsOn("compileKotlin")
+    archiveFileName.set("material-icons-used.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("slim-work"))
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    val iconRef = Regex("androidx/compose/material/icons/[A-Za-z/]+?/[A-Za-z0-9_]+Kt")
+    val used = mutableSetOf<String>()
+    doFirst {
+        fun scan(bytes: ByteArray) {
+            iconRef.findAll(String(bytes, Charsets.ISO_8859_1)).forEach { used += it.value + ".class" }
+        }
+        appClasses.get().asFile.walkTopDown().filter { it.isFile && it.name.endsWith(".class") }
+            .forEach { scan(it.readBytes()) }
+        runtime.get().files.filter(::isOwnModule).forEach { jar ->
+            ZipFile(jar).use { zip ->
+                zip.entries().asSequence().filter { it.name.endsWith(".class") }
+                    .forEach { entry -> zip.getInputStream(entry).use { scan(it.readBytes()) } }
+            }
+        }
+        logger.lifecycle("slimIcons: keeping ${used.size} icon classes")
+    }
+    from({ runtime.get().files.filter(::isIconsExtended).map { zipTree(it) } }) {
+        include { element -> element.isDirectory || element.path in used || element.path.startsWith("META-INF") }
+    }
+}
+
+val slimLibs by tasks.registering(Sync::class) {
+    val runtime = configurations.named("runtimeClasspath")
+    from({ runtime.get().files.filterNot { isOnnx(it) || isIconsExtended(it) } })
+    from(slimOnnx)
+    from(slimIcons)
+    into(slimDir)
+}
+
 val composeMainClass = "com.music.bitchord.desktop.MainKt"
 
 compose.desktop {
@@ -350,6 +413,12 @@ compose.desktop {
             it.metadata.installationPath.asFile.absolutePath
         }.get()
         mainClass = composeMainClass
+        // The app jar plus the slimmed libraries above, instead of the raw runtime classpath.
+        disableDefaultConfiguration()
+        mainJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
+        fromFiles(tasks.named<Jar>("jar").flatMap { it.archiveFile })
+        fromFiles(project.fileTree(slimDir) { include("*.jar") })
+        dependsOn(tasks.named("jar"), slimLibs)
         jvmArgs("-Xmx512m")
         jvmArgs("-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=20000", "-XX:G1PeriodicGCSystemLoadThreshold=0")
         jvmArgs("-Dbitchord.version=$appVersion")
