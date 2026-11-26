@@ -410,6 +410,12 @@ private const val PLAYLISTS_SHELF = "Playlists"
 private const val STATS_MAX_DELTA_MS = 15_000L
 private const val SCROBBLE_THRESHOLD_MS = 180_000L
 
+/** How many unplayable tracks in a row are skipped before playback gives up. */
+private const val MAX_CONSECUTIVE_FAILURES = 5
+
+/** How long a failed track's message stays up before the next track is tried. */
+private const val FAILURE_SKIP_DELAY_MS = 1_500L
+
 /** Used for tracking restart of the current song when previous button is pressed. */
 private const val BACK_RESTARTS_AFTER_MS = 10_000L
 
@@ -1508,6 +1514,29 @@ fun OtoDesktopApp() {
         canvas = withContext(Dispatchers.IO) { DesktopCanvasClient.lookup(current) }
     }
 
+    // A track that cannot be played is skipped rather than left standing, so one bad stream never
+    // stops the queue. Bounded, so a dead connection does not race through the whole queue.
+    var consecutiveFailures by remember { mutableStateOf(0) }
+    LaunchedEffect(playback.error, playback.song?.videoId) {
+        val failed = playback.song ?: return@LaunchedEffect
+        if (playback.error == null) {
+            if (playback.isPlaying) consecutiveFailures = 0
+            return@LaunchedEffect
+        }
+        DesktopTrackLog.log("playback: '${failed.title}' failed (${playback.error}); skipping")
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            DesktopPlayerHost.showMessage("Couldn't play these tracks — check your connection")
+            return@LaunchedEffect
+        }
+        delay(FAILURE_SKIP_DELAY_MS)
+        if (playbackEngine.state.value.song?.videoId != failed.videoId || playbackEngine.state.value.error == null) {
+            return@LaunchedEffect
+        }
+        consecutiveFailures++
+        DesktopPlayerHost.showMessage("Couldn't play '${failed.title}', skipping")
+        playNext()
+    }
+    LaunchedEffect(playback.isPlaying) { if (playback.isPlaying) consecutiveFailures = 0 }
     LaunchedEffect(playback.song?.videoId, playback.isPlaying, playback.durationMs) {
         DesktopWindowsMedia.publish(playback)
     }

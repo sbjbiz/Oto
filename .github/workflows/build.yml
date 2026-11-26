@@ -46,7 +46,7 @@ jobs:
       - name: Music video self-test
         env:
           OTO_NET_TEST: "1"
-        run: .\gradlew.bat :desktopApp:test --tests "app.oto.desktop.MusicVideoSelfTest" -i "-Poto.version=${{ steps.version.outputs.value }}"
+        run: .\gradlew.bat :desktopApp:test --tests "app.oto.desktop.MusicVideoSelfTest*" -i "-Poto.version=${{ steps.version.outputs.value }}"
 
       - name: Size report
         shell: bash

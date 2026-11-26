@@ -674,7 +674,7 @@ internal fun PlayerActionRow(
 
 /** Shuffle, repeat and autoplay in one capsule — the modes the queue is played in. */
 @Composable
-private fun PlaybackModesPill(
+internal fun PlaybackModesPill(
     shuffleEnabled: Boolean,
     repeatMode: Int,
     autoplayEnabled: Boolean,

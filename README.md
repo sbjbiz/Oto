@@ -50,6 +50,10 @@ gradlew.bat :desktopApp:packageExe
 
 The installer lands in `desktopApp/build/compose/binaries/main/exe/`.
 
+## Contributors
+
+- [sbjbiz](https://github.com/sbjbiz) — creator and maintainer
+
 ## Disclaimer
 
 Oto is not affiliated with, endorsed by, or connected to YouTube or Google in any way. Use it at your own discretion.

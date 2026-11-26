@@ -45,4 +45,12 @@ class MusicVideoSelfTest {
             decoder.close()
         }
     }
+
+    @Test
+    fun autoplayStationWorksWithoutAnAccount() {
+        if (System.getenv("OTO_NET_TEST") != "1") return
+        val station = runBlocking { DesktopSearchClient.radio("dQw4w9WgXcQ") }.getOrThrow()
+        println("autoplay station: ${station.size} tracks, first: ${station.take(3).joinToString { it.title }}")
+        assertTrue(station.size >= 5, "autoplay station came back with ${station.size} tracks")
+    }
 }

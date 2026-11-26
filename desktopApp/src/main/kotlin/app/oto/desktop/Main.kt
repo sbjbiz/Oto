@@ -14,6 +14,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -159,14 +162,32 @@ private fun desktopMain() = application {
                 close = { if (DesktopWindowVisibility.onCloseRequest()) exitApplication() },
             )
         }
+        // Full screen pins the borderless window a few pixels past every edge of the monitor (see
+        // window_jni.cpp's OVERSHOOT), so the content is inset by the same amount to stay on screen.
+        val fullScreen by DesktopWindowMode.fullScreen.collectAsState()
+        val overshoot = with(androidx.compose.ui.platform.LocalDensity.current) {
+            if (fullScreen) FULLSCREEN_OVERSHOOT_PX.toDp() else 0.dp
+        }
         CompositionLocalProvider(
             LocalDesktopWindowActions provides actions,
             LocalDesktopWindowScope provides this,
         ) {
-            OtoDesktopApp()
+            androidx.compose.foundation.layout.Box(
+                androidx.compose.ui.Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (fullScreen) androidx.compose.ui.graphics.Color.Black else androidx.compose.ui.graphics.Color.Transparent,
+                    )
+                    .padding(overshoot),
+            ) {
+                OtoDesktopApp()
+            }
         }
     }
 }
+
+/** Matches OVERSHOOT in native/window/window_jni.cpp. */
+private const val FULLSCREEN_OVERSHOOT_PX = 8
 
 private const val MIN_WINDOW_WIDTH_DP = 900.0
 private const val MIN_WINDOW_HEIGHT_DP = 600.0

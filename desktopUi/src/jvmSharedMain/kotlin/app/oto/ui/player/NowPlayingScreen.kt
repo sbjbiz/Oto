@@ -2145,6 +2145,21 @@ fun NowPlayingScreen(
                                     )
                                 }
                             },
+                            // Always on the desktop window: shuffle, repeat (loop) and autoplay.
+                            modes = if (compact) {
+                                null
+                            } else {
+                                {
+                                    PlaybackModesPill(
+                                        shuffleEnabled = shuffleEnabled,
+                                        repeatMode = repeatMode,
+                                        autoplayEnabled = autoplayEnabled,
+                                        onToggleShuffle = onToggleShuffle,
+                                        onCycleRepeat = onCycleRepeat,
+                                        onToggleAutoplay = onToggleAutoplay,
+                                    )
+                                }
+                            },
                         )
                     },
                     lyricsPane = { compact ->

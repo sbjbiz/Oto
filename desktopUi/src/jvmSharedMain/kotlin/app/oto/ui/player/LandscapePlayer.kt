@@ -488,6 +488,8 @@ internal fun LandscapeMainPane(
     /** Null where Settings hides the volume bar. */
     volume: (@Composable () -> Unit)?,
     modifier: Modifier = Modifier,
+    /** Shuffle, repeat and autoplay, under the volume; null where the row is not shown. */
+    modes: (@Composable () -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
@@ -512,6 +514,10 @@ internal fun LandscapeMainPane(
         if (volume != null) {
             Spacer(Modifier.height(if (compact) 0.dp else 12.dp))
             volume()
+        }
+        if (modes != null) {
+            Spacer(Modifier.height(16.dp))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { modes() }
         }
     }
 }
