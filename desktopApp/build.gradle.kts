@@ -418,7 +418,7 @@ compose.desktop {
         mainJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
         fromFiles(tasks.named<Jar>("jar").flatMap { it.archiveFile })
         fromFiles(project.fileTree(slimDir) { include("*.jar") })
-        dependsOn(tasks.named("jar"), slimLibs)
+        dependsOn("jar", "slimLibs")
         jvmArgs("-Xmx512m")
         jvmArgs("-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=20000", "-XX:G1PeriodicGCSystemLoadThreshold=0")
         jvmArgs("-Dbitchord.version=$appVersion")

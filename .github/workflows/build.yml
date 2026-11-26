@@ -50,6 +50,18 @@ jobs:
           du -sh . || true
           ls -S -l app | head -15 || true
 
+      - name: Smoke test (app starts and stays up)
+        shell: pwsh
+        run: |
+          $exe = "desktopApp/build/compose/binaries/main/app/Oto/Oto.exe"
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 45
+          $failed = $p.HasExited
+          if ($failed) { Write-Host "Oto exited early with code $($p.ExitCode)" } else { Write-Host "Oto is still running"; Stop-Process -Id $p.Id -Force }
+          $log = Join-Path $env:LOCALAPPDATA "Oto\oto.log"
+          if (Test-Path $log) { Get-Content $log -Tail 80 } else { Write-Host "no log at $log" }
+          if ($failed) { exit 1 }
+
       - name: Collect
         shell: pwsh
         run: |

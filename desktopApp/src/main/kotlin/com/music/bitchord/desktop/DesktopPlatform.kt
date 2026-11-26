@@ -12,3 +12,10 @@ internal object DesktopPlatform {
     /** Whether the application draws the window's own frame instead of the system drawing it. */
     val drawsOwnWindowFrame: Boolean = true
 }
+
+/** Oto's own folder: `%LOCALAPPDATA%\\Oto`. */
+internal fun otoDataDir(): String {
+    val base = System.getenv("LOCALAPPDATA")?.takeIf { it.isNotBlank() }
+        ?: "${System.getProperty("user.home")}\\AppData\\Local"
+    return java.nio.file.Path.of(base, "Oto").toString()
+}

@@ -11,14 +11,12 @@ internal object DesktopTrackLog {
 
     private val clock = DateTimeFormatter.ofPattern("HH:mm:ss")
 
-    /** `$XDG_STATE_HOME/bitchord/desktop.log`, or the usual default under $HOME. */
+    /** `%LOCALAPPDATA%\\Oto\\oto.log`. */
     private val file: Path? by lazy {
         runCatching {
-            val state = System.getenv("XDG_STATE_HOME")?.takeIf { it.isNotBlank() }
-                ?: "${System.getProperty("user.home")}/.local/state"
-            val directory = Path.of(state, "Oto")
+            val directory = Path.of(otoDataDir())
             Files.createDirectories(directory)
-            directory.resolve("desktop.log")
+            directory.resolve("oto.log")
         }.getOrNull()
     }
 
