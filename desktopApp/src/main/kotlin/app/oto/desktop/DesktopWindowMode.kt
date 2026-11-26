@@ -58,7 +58,7 @@ internal object DesktopWindowMode {
         set(placement)
     }
 
-    private fun setFullScreen(on: Boolean) {
+    internal fun setFullScreen(on: Boolean) {
         _fullScreen.value = on
         // On Windows the only thing that covers a taskbar told to stay on top is a native borderless
         // window raised above it; no Compose placement does, and true Fullscreen paints the screen

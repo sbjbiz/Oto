@@ -1062,11 +1062,12 @@ object StreamResolver {
     class VideoOnly(val url: String, val width: Int, val height: Int, val mimeType: String)
 
     /**
-     * The picture half of [videoId], for showing a music video while its audio plays through the
-     * usual path. Progressive only, at most [maxHeight] lines, H.264 preferred over VP9 because it
-     * is cheaper to decode. Null when YouTube offers nothing suitable.
+     * Every picture-only rendition YouTube offers for [videoId], one per height, largest first —
+     * the music video shown in step with the audio, and the heights the quality picker lists.
+     * Progressive only; H.264 preferred over VP9 at the same height because it is cheaper to
+     * decode. Empty when YouTube offers nothing suitable.
      */
-    suspend fun resolveVideoOnly(videoId: String, maxHeight: Int = 480): VideoOnly? =
+    suspend fun resolveVideoOnly(videoId: String): List<VideoOnly> =
         extractionGate.withLock {
             withContext(Dispatchers.IO) {
                 init
@@ -1074,17 +1075,21 @@ object StreamResolver {
                     "https://www.youtube.com/watch?v=$videoId",
                 )
                 extractor.fetchPage()
-                val candidates = extractor.videoOnlyStreams.filter {
-                    !it.content.isNullOrBlank() &&
-                        it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP &&
-                        it.height in 1..maxHeight
-                }
-                val pick = candidates.sortedWith(
-                    compareByDescending<VideoStream> { it.height }
-                        .thenByDescending { it.format == MediaFormat.MPEG_4 },
-                ).firstOrNull() ?: return@withContext null
-                TrackLog.d(TAG, "music video: ${pick.format?.name} ${pick.width}x${pick.height} for $videoId")
-                VideoOnly(pick.content, pick.width, pick.height, pick.format?.mimeType.orEmpty())
+                val renditions = extractor.videoOnlyStreams
+                    .filter {
+                        !it.content.isNullOrBlank() &&
+                            it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP &&
+                            it.height > 0
+                    }
+                    .sortedWith(
+                        compareByDescending<VideoStream> { it.height }
+                            .thenByDescending { it.format == MediaFormat.MPEG_4 }
+                            .thenBy { it.fps },
+                    )
+                    .distinctBy { it.height }
+                    .map { VideoOnly(it.content, it.width, it.height, it.format?.mimeType.orEmpty()) }
+                TrackLog.d(TAG, "music video: ${renditions.joinToString { "${it.height}p" }} for $videoId")
+                renditions
             }
         }
 

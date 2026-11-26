@@ -134,7 +134,7 @@ private val LANDSCAPE_HANDLE_STRIP = 24.dp
  * shunting them down to its foot. Only the desktop window uses it; a
  * phone-height window keeps the sleeve filling the column above its row.
  */
-private val LANDSCAPE_DESKTOP_CONTROLS_RESERVE = 300.dp
+private val LANDSCAPE_DESKTOP_CONTROLS_RESERVE = 200.dp
 
 /**
  * The player in a landscape window — a tablet, or a phone on its side. See
@@ -177,6 +177,8 @@ internal fun LandscapePlayerLayout(
     lyricsPane: @Composable (compact: Boolean) -> Unit,
     queuePane: @Composable () -> Unit,
     modifier: Modifier = Modifier,
+    /** A music video is showing: the sleeve is 16:9 rather than square. */
+    wideArtwork: Boolean = false,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         background(Modifier.fillMaxSize())
@@ -192,12 +194,9 @@ internal fun LandscapePlayerLayout(
             val compact = maxHeight < LANDSCAPE_COMPACT_HEIGHT
             val gutter = if (compact) LANDSCAPE_GUTTER_COMPACT else PLAYER_GUTTER
 
-            // On a desktop window the transport sits under the sleeve in the
-            // left column, so the main state shows the lyric sheet here rather
-            // than the controls — words fill this space, as in Apple Music. The
-            // queue still toggles over it. A phone-height window is untouched:
-            // its main pane is the transport, exactly as before.
-            val shown = if (!compact && pane == PlayerPane.Main) PlayerPane.Lyrics else pane
+            // The right column shows the controls; the lyrics and the queue replace them only
+            // when their buttons under the sleeve are pressed.
+            val shown = pane
 
             Row(
                 modifier = Modifier
@@ -234,30 +233,24 @@ internal fun LandscapePlayerLayout(
                         Spacer(Modifier.height(12.dp))
                         actions()
                     } else {
-                        // On a desktop window the transport lives here, right
-                        // under the sleeve and always on screen, the way Apple
-                        // Music lays the fullscreen player out. The sleeve is
-                        // capped to [LANDSCAPE_DESKTOP_CONTROLS_RESERVE] less
-                        // than the column so there is room under it, and the box
-                        // wraps that square exactly — no slack left below the
-                        // cover to shove the controls back down to the foot.
+                        // The sleeve, and under it the lyrics / output / queue row. The
+                        // controls sit in the right column.
                         BoxWithConstraints(
                             modifier = Modifier.fillMaxWidth(),
                             contentAlignment = Alignment.Center,
                         ) {
+                            val side = minOf(maxWidth, maxHeight - LANDSCAPE_DESKTOP_CONTROLS_RESERVE)
                             artwork(
-                                Modifier.size(
-                                    minOf(maxWidth, maxHeight - LANDSCAPE_DESKTOP_CONTROLS_RESERVE),
-                                ),
+                                if (wideArtwork) {
+                                    Modifier.size(width = side, height = side * 9f / 16f)
+                                } else {
+                                    Modifier.size(side)
+                                },
                                 true,
                             )
                         }
-                        Spacer(Modifier.height(24.dp))
-                        controls(false)
-                        // The volume bar and the lyrics/output/queue row are
-                        // folded into the player's overflow, which the song
-                        // menu's "More…" opens — so the sleeve and the
-                        // transport are all this column shows.
+                        Spacer(Modifier.height(48.dp))
+                        actions()
                     }
                 }
 

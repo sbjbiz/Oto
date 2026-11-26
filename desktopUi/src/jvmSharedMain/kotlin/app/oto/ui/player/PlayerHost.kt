@@ -66,6 +66,15 @@ interface PlayerHost {
     /** The negotiated output format, as the pipeline row and the hi-res shine read it. */
     val outputFormat: StateFlow<OutputFormatUi>
 
+    /** The heights the playing music video offers, and which one is held. */
+    val musicVideoQuality: StateFlow<MusicVideoQualityUi> get() = NoVideoQuality
+
+    /** Holds [height] for music videos from now on; null is Auto. */
+    fun setMusicVideoQuality(height: Int?) {}
+
+    /** Puts the window into full screen for a music video, or takes it back out. */
+    fun setVideoFullscreen(on: Boolean) {}
+
 
     suspend fun translateLyrics(
         trackId: String,
@@ -256,6 +265,28 @@ enum class CanvasContentMode {
  * Oto's "Convert to video". The host decodes it in step with the audio.
  */
 const val MUSIC_VIDEO_SCHEME = "otovideo:"
+
+private val NoVideoQuality = kotlinx.coroutines.flow.MutableStateFlow(MusicVideoQualityUi())
+
+/** What the video quality box and drawer draw. */
+data class MusicVideoQualityUi(
+    /** Every height the playing video offers, largest first. */
+    val heights: List<Int> = emptyList(),
+    /** The listener's pick, or null for Auto. */
+    val held: Int? = null,
+    /** The height actually on screen. */
+    val activeHeight: Int? = null,
+)
+
+/** How a height is named on screen: the marketing name where there is one, the height otherwise. */
+fun videoQualityLabel(height: Int): String = when {
+    height >= 4320 -> "8K"
+    height >= 2160 -> "4K"
+    height >= 1440 -> "2K"
+    height >= 1080 -> "FullHD"
+    height >= 720 -> "HD"
+    else -> "${height}p"
+}
 
 class CanvasVideoSpec(
     val canvas: CanvasArtwork,

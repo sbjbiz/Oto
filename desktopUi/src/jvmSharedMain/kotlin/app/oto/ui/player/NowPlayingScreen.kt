@@ -821,6 +821,19 @@ fun NowPlayingScreen(
     val spotifyCanvasAutoHide by PlayerSettings.spotifyCanvasAutoHide.collectAsStateWithLifecycle()
     val mixing by PlayerSettings.smartMixInProgress.collectAsStateWithLifecycle()
     val canvas = rememberCanvasArtwork(song)
+    // "Convert to video": the track's own music video in the sleeve, with its quality box and
+    // full-screen button in the corner.
+    val isMusicVideo = canvas.isMusicVideo()
+    var videoFullscreen by remember { mutableStateOf(false) }
+    var showVideoQuality by remember { mutableStateOf(false) }
+    LaunchedEffect(isMusicVideo) {
+        if (!isMusicVideo) {
+            videoFullscreen = false
+            showVideoQuality = false
+        }
+    }
+    LaunchedEffect(videoFullscreen) { PlayerPlatform.host.setVideoFullscreen(videoFullscreen) }
+    DisposableEffect(Unit) { onDispose { PlayerPlatform.host.setVideoFullscreen(false) } }
     var canvasAspect by remember(canvas) { mutableFloatStateOf(0f) }
     // Whether the clip actually has a frame on screen right now, and one of
     // them — used to blow the sleeve out to the full-bleed hero treatment and
@@ -881,7 +894,8 @@ fun NowPlayingScreen(
     // written below, so reopening the player (and a process restart) returns to
     // the same surface on phones and tablets without making this UI state a
     // continuously collected setting.
-    val restoredPlayerScreen = remember { PlayerSettings.lastPlayerScreen.value }
+    // Oto always opens on the player itself; the lyrics and queue open from their buttons.
+    val restoredPlayerScreen = LastPlayerScreen.MAIN
     var queueOpen by remember {
         mutableStateOf(restoredPlayerScreen == LastPlayerScreen.QUEUE)
     }
@@ -1070,6 +1084,10 @@ fun NowPlayingScreen(
     PlayerBackHandler(enabled = showLyricsProviders) { showLyricsProviders = false }
 
     PlayerBackHandler(enabled = showAudioPipeline) { showAudioPipeline = false }
+
+    PlayerBackHandler(enabled = videoFullscreen) { videoFullscreen = false }
+
+    PlayerBackHandler(enabled = showVideoQuality) { showVideoQuality = false }
 
     PlayerBackHandler(enabled = showCast) { showCast = false }
 
@@ -1678,6 +1696,50 @@ fun NowPlayingScreen(
                 }
             }
         }
+            if (videoFullscreen && isMusicVideo && canvas != null) {
+            FullscreenVideoPlayer(
+                song = song,
+                video = { videoModifier ->
+                    CanvasArtworkPlayer(
+                        canvas = canvas,
+                        isPlaying = isPlaying,
+                        modifier = videoModifier,
+                    )
+                },
+                isPlaying = isPlaying,
+                onExitFullscreen = { videoFullscreen = false },
+                onOpenQuality = { showVideoQuality = true },
+                scrubber = {
+                    PlayerScrubber(
+                        shown = shown,
+                        durationMs = durationMs,
+                        loading = audioVersionSwitching,
+                        mixing = false,
+                        transitionWindow = null,
+                        slowMixPulse = true,
+                        onScrub = onScrub,
+                        onScrubFinished = onScrubFinished,
+                    )
+                },
+                transport = {
+                    TransportRow(
+                        isPlaying = isPlaying,
+                        isLoading = isLoading || audioVersionSwitching,
+                        previousEnabled = hasPrevious || pastRestartPoint,
+                        nextEnabled = hasNext,
+                        onPrevious = onPrevious,
+                        onPlayPause = onPlayPause,
+                        onNext = onNext,
+                    )
+                },
+            )
+        }
+        if (showVideoQuality) {
+            VideoQualitySheet(
+                hazeState = playerHaze,
+                onDismiss = { showVideoQuality = false },
+            )
+        }
     }
 
     // A landscape window — a tablet, or a phone on its side — takes an entirely
@@ -1910,7 +1972,7 @@ fun NowPlayingScreen(
                             onCanvasRenderedChange = { canvasRendered = it },
                             // A clip decoding behind a player on its way to the
                             // bar is work nobody sees — see [dockMoving].
-                            pausedForTransition = dockMoving,
+                            pausedForTransition = dockMoving || videoFullscreen,
                             sleeveShape = landscapeArtShape,
                             // Let go of on the way to the mini player, whose
                             // cover sits flat in its bar.
@@ -1980,15 +2042,25 @@ fun NowPlayingScreen(
                                     // the sleeve: the cover in the bar has none.
                                     .graphicsLayer { alpha = if (panelOpen) 0f else dockFade() },
                             )
+                            if (isMusicVideo) {
+                                VideoCornerControls(
+                                    fullscreen = false,
+                                    onToggleFullscreen = { videoFullscreen = true },
+                                    onOpenQuality = { showVideoQuality = true },
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(10.dp)
+                                        .graphicsLayer { alpha = dockFade() },
+                                )
+                            }
                         }
                     },
                     actions = playerActions,
+                    wideArtwork = isMusicVideo,
                     controls = { compact ->
                         LandscapeMainPane(
                             compact = compact,
-                            // The "Playing from …" caption is gone, matching the portrait player:
-                            // the credits name the track, and the queue says where it came from.
-                            caption = null,
+                            caption = playbackOriginText(song),
                             onOpenCaption = openPlaybackOrigin,
                             credits = {
                                 LandscapeCredits(
@@ -2009,7 +2081,7 @@ fun NowPlayingScreen(
                             // the transport lives under the sleeve and the full
                             // lyric sheet owns the column on the right, so there is
                             // no room — or need — for a single line here.
-                            lyricStrip = if (compact && syncedLyricsEnabled) {
+                            lyricStrip = if (syncedLyricsEnabled) {
                                 {
                                     CurrentLyricStrip(
                                         lines = lyricsTranslation.displayedLyrics,
@@ -2062,7 +2134,7 @@ fun NowPlayingScreen(
                                     compact = compact,
                                 )
                             },
-                            volume = if (hideVolumeBar || !compact) {
+                            volume = if (hideVolumeBar) {
                                 null
                             } else {
                                 {

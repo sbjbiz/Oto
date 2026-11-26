@@ -133,6 +133,27 @@ internal object DesktopPlayerHost : PlayerHost {
         .map { it.toOutputFormat() }
         .stateIn(scope, SharingStarted.Eagerly, OutputFormatUi())
 
+    override val musicVideoQuality: StateFlow<app.oto.ui.player.MusicVideoQualityUi> =
+        DesktopMusicVideoQuality.state
+
+    override fun setMusicVideoQuality(height: Int?) = DesktopMusicVideoQuality.hold(height)
+
+    /** Whether the window went full screen for a video, so leaving it undoes only that. */
+    @Volatile
+    private var videoTookFullScreen = false
+
+    override fun setVideoFullscreen(on: Boolean) {
+        if (on) {
+            if (!DesktopWindowMode.fullScreen.value) {
+                DesktopWindowMode.setFullScreen(true)
+                videoTookFullScreen = true
+            }
+        } else if (videoTookFullScreen) {
+            videoTookFullScreen = false
+            DesktopWindowMode.setFullScreen(false)
+        }
+    }
+
 
     override suspend fun translateLyrics(
         trackId: String,

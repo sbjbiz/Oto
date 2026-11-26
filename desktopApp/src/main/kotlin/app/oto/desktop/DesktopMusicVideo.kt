@@ -7,6 +7,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.asComposeImageBitmap
+import androidx.compose.ui.layout.onSizeChanged
+import app.oto.ui.player.MusicVideoQualityUi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import org.jetbrains.skia.Bitmap
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -16,7 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import app.oto.data.canvas.CanvasArtwork
@@ -70,7 +78,6 @@ import org.bytedeco.javacpp.DoublePointer
 import org.bytedeco.javacpp.IntPointer
 import org.bytedeco.javacpp.PointerPointer
 import org.jetbrains.skia.ColorAlphaType
-import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
 import kotlin.math.roundToInt
 
@@ -114,6 +121,43 @@ internal fun musicVideoArtwork(song: Song): CanvasArtwork =
 internal fun Song.showsMusicVideo(): Boolean =
     isVideo && localUri == null && DesktopSearchClient.isVideoId(videoId)
 
+/** The listener's video quality, and what the playing video offers — what the quality box reads. */
+internal object DesktopMusicVideoQuality {
+    private const val KEY = "music_video_quality"
+
+    private val _state = MutableStateFlow(
+        MusicVideoQualityUi(held = DesktopPersistence().int(KEY, 0).takeIf { it > 0 }),
+    )
+    val state: StateFlow<MusicVideoQualityUi> = _state
+
+    /** Holds [height] for every video from now on; null is Auto. */
+    fun hold(height: Int?) {
+        DesktopPersistence().saveInt(KEY, height ?: 0)
+        _state.update { it.copy(held = height) }
+    }
+
+    fun offered(heights: List<Int>) = _state.update { it.copy(heights = heights) }
+
+    fun active(height: Int?) = _state.update { it.copy(activeHeight = height) }
+}
+
+/** The steps Auto moves between, by the height the picture is drawn at. */
+private val AUTO_STEPS = listOf(360, 480, 720, 1080)
+
+/** The rendition to play: the held height where the video has it, otherwise Auto's pick. */
+private fun pickRendition(
+    renditions: List<StreamResolver.VideoOnly>,
+    held: Int?,
+    autoTarget: Int,
+): StreamResolver.VideoOnly? {
+    if (renditions.isEmpty()) return null
+    held?.let { wanted -> renditions.firstOrNull { it.height == wanted }?.let { return it } }
+    val target = held ?: autoTarget
+    // The smallest rendition that covers the target, else the largest there is.
+    return renditions.filter { it.height >= target }.minByOrNull { it.height }
+        ?: renditions.maxByOrNull { it.height }
+}
+
 /** The player's cover slot, playing the music video in step with the audio. */
 @Composable
 internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modifier: Modifier) {
@@ -123,16 +167,30 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
     val reportCover by rememberUpdatedState(spec.onCoverChanged)
     val reportFrame by rememberUpdatedState(spec.onFrameCaptured)
     val presentationAlpha by rememberUpdatedState(spec.presentationAlpha)
+    val paused by rememberUpdatedState(spec.pausedForTransition)
+
+    val quality by DesktopMusicVideoQuality.state.collectAsState()
+    var renditions by remember(videoId) { mutableStateOf<List<StreamResolver.VideoOnly>>(emptyList()) }
+    var viewHeightPx by remember { mutableIntStateOf(0) }
+    val autoTarget = AUTO_STEPS.firstOrNull { it >= viewHeightPx } ?: AUTO_STEPS.last()
 
     LaunchedEffect(videoId) {
-        val stream = withContext(Dispatchers.IO) {
+        val found = withContext(Dispatchers.IO) {
             runCatching { StreamResolver.resolveVideoOnly(videoId) }
                 .onFailure { DesktopTrackLog.log("music video: lookup failed for $videoId: ${it.message}") }
-                .getOrNull()
-        } ?: run {
-            DesktopTrackLog.log("music video: no picture stream for $videoId; showing the cover")
-            return@LaunchedEffect
+                .getOrDefault(emptyList())
         }
+        if (found.isEmpty()) DesktopTrackLog.log("music video: no picture stream for $videoId; showing the cover")
+        renditions = found
+        DesktopMusicVideoQuality.offered(found.map { it.height })
+    }
+    val chosen = remember(renditions, quality.held, autoTarget) {
+        pickRendition(renditions, quality.held, autoTarget)
+    }
+
+    LaunchedEffect(chosen?.url) {
+        val stream = chosen ?: return@LaunchedEffect
+        DesktopMusicVideoQuality.active(stream.height)
         val decoder = DesktopVideoDecoder()
         val opened = withContext(Dispatchers.IO) {
             decoder.open(stream.url, runCatching { StreamResolver.mediaHeadersFor(stream.url) }.getOrDefault(emptyMap()))
@@ -142,15 +200,25 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
             withContext(NonCancellable + Dispatchers.IO) { decoder.close() }
             return@LaunchedEffect
         }
+        // Two bitmaps written in turn and reused for the whole video, so a frame costs a copy into
+        // memory that already exists rather than a fresh full-size allocation.
+        val info = ImageInfo.makeN32(decoder.width, decoder.height, ColorAlphaType.OPAQUE)
+        val buffers = Array(2) { Bitmap().apply { allocPixels(info) } }
+        val images = buffers.map { it.asComposeImageBitmap() }
+        var next = 0
         try {
             val pixels = ByteArray(decoder.width * decoder.height * 4)
-            val info = ImageInfo.makeN32(decoder.width, decoder.height, ColorAlphaType.OPAQUE)
             var shownPts = -1L
             var seeksSeen = DesktopMusicVideoClock.seeks
             var pendingPts = -1L
             // Start where the audio already is: a conversion lands mid-song.
             withContext(Dispatchers.IO) { decoder.seekTo(DesktopMusicVideoClock.nowMs()) }
             while (isActive) {
+                if (paused) {
+                    // Covered by the full-screen copy of this video: hold, and let it decode instead.
+                    delay(PAUSED_POLL_MS)
+                    continue
+                }
                 val target = DesktopMusicVideoClock.nowMs()
                 val jumped = DesktopMusicVideoClock.seeks != seeksSeen
                 val drifted = shownPts >= 0 && (target < shownPts - 750 || target > shownPts + 2_500)
@@ -161,7 +229,6 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
                     shownPts = -1L
                 }
                 if (!DesktopMusicVideoClock.playing && shownPts >= 0 && pendingPts < 0) {
-                    // Paused with something on screen: hold the frame and wait.
                     delay(PAUSED_POLL_MS)
                     continue
                 }
@@ -174,19 +241,24 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
                 }
                 val now = DesktopMusicVideoClock.nowMs()
                 when {
-                    // Behind the audio: drop it and decode on, unless nothing is up yet.
                     pendingPts < now - LATE_MS && shownPts >= 0 -> pendingPts = -1L
-                    // Early: wait for its moment, but keep checking for seeks.
                     pendingPts > now + EARLY_MS && shownPts >= 0 ->
                         delay((pendingPts - now).coerceAtMost(MAX_WAIT_MS))
                     else -> {
-                        frame = Image.makeRaster(info, pixels.copyOf(), decoder.width * 4).toComposeImageBitmap()
+                        val slot = next
+                        next = 1 - next
+                        withContext(Dispatchers.IO) {
+                            buffers[slot].installPixels(pixels)
+                            buffers[slot].notifyPixelsChanged()
+                        }
+                        frame = images[slot]
                         shownPts = pendingPts
                         pendingPts = -1L
                     }
                 }
             }
         } finally {
+            frame = null
             withContext(NonCancellable + Dispatchers.IO) { decoder.close() }
         }
     }
@@ -210,7 +282,11 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
         }
     }
 
-    Canvas(modifier = modifier.graphicsLayer { this.alpha = alpha * presentationAlpha() }) {
+    Canvas(
+        modifier = modifier
+            .onSizeChanged { viewHeightPx = it.height }
+            .graphicsLayer { this.alpha = alpha * presentationAlpha() },
+    ) {
         val image = frame ?: return@Canvas
         // Letterboxed rather than cropped: a music video's frame is the picture, not decoration.
         drawRect(Color.Black)
@@ -227,6 +303,7 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
             srcSize = IntSize(image.width, image.height),
             dstOffset = IntOffset(((size.width - drawWidth) / 2f).roundToInt(), ((size.height - drawHeight) / 2f).roundToInt()),
             dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt()),
+            filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium,
         )
     }
 }
@@ -283,13 +360,13 @@ private class DesktopVideoDecoder {
         val decoder = avcodec_find_decoder(parameters.codec_id()) ?: error("no decoder for this video")
         val context = avcodec_alloc_context3(decoder)
         check(avcodec_parameters_to_context(context, parameters) >= 0) { "bad codec parameters" }
-        context.thread_count(2)
+        context.thread_count(0)
         check(avcodec_open2(context, decoder, null as AVDictionary?) >= 0) { "decoder refused to open" }
         codec = context
         sourceWidth = context.width()
         sourceHeight = context.height()
         check(sourceWidth > 0 && sourceHeight > 0) { "the video has no size" }
-        val scale = minOf(1.0, MAX_EDGE.toDouble() / maxOf(sourceWidth, sourceHeight))
+        val scale = minOf(1.0, MAX_HEIGHT.toDouble() / sourceHeight)
         width = ((sourceWidth * scale).toInt() / 2) * 2
         height = ((sourceHeight * scale).toInt() / 2) * 2
         val size = av_image_get_buffer_size(AV_PIX_FMT_BGRA, width, height, 1)
@@ -371,6 +448,6 @@ private class DesktopVideoDecoder {
     }
 
     private companion object {
-        const val MAX_EDGE = 854
+        const val MAX_HEIGHT = 1080
     }
 }
