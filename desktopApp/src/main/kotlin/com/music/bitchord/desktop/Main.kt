@@ -8,7 +8,6 @@ import com.music.bitchord.data.innertube.InnerTubeXResolver
 import com.music.bitchord.data.innertube.StreamResolver
 import com.music.bitchord.data.innertube.potoken.PoTokenGenerator
 import com.music.bitchord.data.lyrics.LyricsTranslation
-import com.music.bitchord.data.spotify.SpotifyLibrary
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,8 +26,6 @@ import kotlin.math.roundToInt
 import org.jetbrains.compose.resources.painterResource
 
 fun main() {
-    // Before any WebView exists, so the sign-in window can start over with an empty jar.
-    DesktopWebCookies.install()
     DesktopWindowVisibility.install()
     // The player is the phone's, from the shared UI module; this is what it reads underneath.
     PlayerPlatform.install(DesktopPlayerHost)
@@ -39,10 +36,6 @@ fun main() {
         DesktopTrackLog.log("$tag/$level: $message" + (error?.let { " (${it.message})" } ?: ""))
     }
     LyricsTranslation.cacheDir = DesktopMediaCache.directory.toFile()
-    // The Spotify library both apps share, on the tokens the web player mints in JavaFX.
-    SpotifyLibrary.auth = SpotifyLibrary.Auth {
-        DesktopSpotifyToken.accessToken()?.let { SpotifyLibrary.Tokens(it, DesktopSpotifyToken.clientToken()) }
-    }
     // English only.
     com.music.bitchord.data.innertube.Innertube.appLanguage = { "en" }
     // YouTube playback is the phone's StreamResolver over InnerTubeX, with BotGuard PoTokens

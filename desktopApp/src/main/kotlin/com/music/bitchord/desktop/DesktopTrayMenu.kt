@@ -1,21 +1,9 @@
 package com.music.bitchord.desktop
 
-import com.music.bitchord.desktop.tray.DBusMenu
-import com.music.bitchord.desktop.tray.DBusMenuEvent
-import com.music.bitchord.desktop.tray.DBusMenuItem
-import com.music.bitchord.desktop.tray.DBusMenuLayout
-import com.music.bitchord.desktop.tray.DBusMenuProperties
-import com.music.bitchord.desktop.tray.DBusMenuShowGroup
-import org.freedesktop.dbus.interfaces.Properties
-import org.freedesktop.dbus.types.UInt32
-import org.freedesktop.dbus.types.Variant
 import java.awt.EventQueue
 
-/** The tray menu, described rather than drawn. */
+/** The tray menu: what the Windows tray icon's right-click popup shows. */
 internal object DesktopTrayMenu {
-
-    /** The root's id in the protocol; every real entry hangs off it. */
-    private const val ROOT_ID = 0
 
     private const val ID_NOW_PLAYING = 1
     private const val ID_SEPARATOR_TOP = 2
@@ -41,7 +29,7 @@ internal object DesktopTrayMenu {
     private var openSettings: () -> Unit = {}
     private var quit: () -> Unit = {}
 
-    /** Told to the host so it knows the menu it holds has gone stale. */
+    /** Told to the tray so it rebuilds its popup. */
     private var onLayoutChanged: (Int) -> Unit = {}
 
     fun bind(
@@ -93,10 +81,10 @@ internal object DesktopTrayMenu {
             add(Entry(ID_NEXT, label = DesktopStrings["widget_next", "Next"], icon = "media-skip-forward", action = next))
             add(Entry(ID_PREVIOUS, label = DesktopStrings["widget_previous", "Previous"], icon = "media-skip-backward", action = previous))
             add(Entry(ID_SEPARATOR_MIDDLE, separator = true))
-            add(Entry(ID_OPEN_PLAYER, label = DesktopStrings["widget_open_bitchord", "Open Oto"], icon = "media-playback-start", action = openPlayer))
+            add(Entry(ID_OPEN_PLAYER, label = DesktopStrings["widget_open_oto", "Open Oto"], icon = "media-playback-start", action = openPlayer))
             add(Entry(ID_SETTINGS, label = DesktopStrings["settings", "Settings"], icon = "preferences-system", action = openSettings))
             add(Entry(ID_SEPARATOR_BOTTOM, separator = true))
-            add(Entry(ID_QUIT, label = DesktopStrings["d_quit_bitchord", "Quit Oto"], icon = "application-exit", action = quit))
+            add(Entry(ID_QUIT, label = DesktopStrings["d_quit_oto", "Quit Oto"], icon = "application-exit", action = quit))
         }
     }
 
@@ -117,12 +105,6 @@ internal object DesktopTrayMenu {
         }
     }
 
-    /** Runs whatever the clicked entry does, on the toolkit's own thread. */
-    private fun activate(id: Int) {
-        val action = entries().firstOrNull { it.id == id }?.action ?: return
-        EventQueue.invokeLater(action)
-    }
-
     private data class Entry(
         val id: Int,
         val label: String = "",
@@ -130,106 +112,5 @@ internal object DesktopTrayMenu {
         val enabled: Boolean = true,
         val icon: String? = null,
         val action: (() -> Unit)? = null,
-    ) {
-        /**
-         * `_` marks a mnemonic in a dbusmenu label, so a title carrying one would lose it and gain
-         * an underline.
-         */
-        fun properties(): Map<String, Variant<*>> = buildMap {
-            if (separator) {
-                put("type", Variant("separator"))
-                return@buildMap
-            }
-            put("label", Variant(label.replace("_", "__")))
-            put("enabled", Variant(enabled))
-            put("visible", Variant(true))
-            icon?.let { put("icon-name", Variant(it)) }
-        }
-    }
-
-    /** The object the shell talks to. */
-    internal class Exported : DBusMenu, Properties {
-
-        override fun getObjectPath(): String = OBJECT_PATH
-
-        override fun GetLayout(
-            parentId: Int,
-            recursionDepth: Int,
-            propertyNames: Array<String>,
-        ): DBusMenuLayout<UInt32, DBusMenuItem> {
-            val wanted = propertyNames.toSet()
-            val item = if (parentId == ROOT_ID) {
-                // Depth 0 means "the whole tree"; anything else still fits, because this menu is
-                // one level deep by design.
-                val children = if (recursionDepth == 0) {
-                    emptyList()
-                } else {
-                    entries().map { Variant(it.node(wanted), "(ia{sv}av)") }
-                }
-                DBusMenuItem(ROOT_ID, mapOf("children-display" to Variant("submenu")), children)
-            } else {
-                entries().firstOrNull { it.id == parentId }?.node(wanted)
-                    ?: DBusMenuItem(parentId, emptyMap(), emptyList())
-            }
-            return DBusMenuLayout(UInt32(revision().toLong()), item)
-        }
-
-        override fun GetGroupProperties(ids: IntArray, propertyNames: Array<String>): List<DBusMenuProperties> {
-            val wanted = propertyNames.toSet()
-            val requested = ids.toSet()
-            return entries()
-                .filter { requested.isEmpty() || it.id in requested }
-                .map { DBusMenuProperties(it.id, it.properties().retaining(wanted)) }
-        }
-
-        override fun GetProperty(id: Int, name: String): Variant<*> =
-            entries().firstOrNull { it.id == id }?.properties()?.get(name) ?: Variant("")
-
-        override fun Event(id: Int, eventId: String, data: Variant<*>?, timestamp: UInt32?) {
-            if (eventId == "clicked") activate(id)
-        }
-
-        override fun EventGroup(events: List<DBusMenuEvent>): List<Int> {
-            events.forEach { event -> if (event.eventId == "clicked") activate(event.id) }
-            // An empty list is the protocol's "every one of them landed".
-            return emptyList()
-        }
-
-        /**
-         * Answered `true` so the host re-reads before it draws: the play/pause entry's label
-         * depends on state that may have moved since the last time it looked.
-         */
-        override fun AboutToShow(id: Int): Boolean = true
-
-        override fun AboutToShowGroup(ids: IntArray): DBusMenuShowGroup<IntArray, IntArray> =
-            DBusMenuShowGroup(ids, IntArray(0))
-
-        @Suppress("UNCHECKED_CAST")
-        override fun <A : Any?> Get(interfaceName: String, property: String): A =
-            menuProperties()[property] as A
-
-        override fun GetAll(interfaceName: String): Map<String, Variant<*>> = menuProperties()
-
-        override fun <A : Any?> Set(interfaceName: String, property: String, value: A) = Unit
-
-        private fun menuProperties(): Map<String, Variant<*>> = mapOf(
-            "Version" to Variant(UInt32(3)),
-            "Status" to Variant("normal"),
-            "TextDirection" to Variant("ltr"),
-            "IconThemePath" to Variant(emptyList<String>(), "as"),
-        )
-
-        private fun Entry.node(wanted: Set<String>): DBusMenuItem =
-            DBusMenuItem(id, properties().retaining(wanted), emptyList())
-
-        /** An empty request means every property, which is what hosts send. */
-        private fun Map<String, Variant<*>>.retaining(wanted: Set<String>): Map<String, Variant<*>> =
-            if (wanted.isEmpty()) this else filterKeys { it in wanted }
-    }
-
-    /** Where the menu is exported, and what the tray icon points at. */
-    const val OBJECT_PATH = "/MenuBar"
-
-    /** The root's id, for the host's benefit when the layout changes. */
-    const val ROOT = ROOT_ID
+    )
 }

@@ -60,9 +60,7 @@ class DesktopPlaybackEngine(
     /** Automix's evidence. */
     private val analyzer = DesktopTrackAnalyzer(
         performance = { automixPerformance },
-        // Automix is off in a party, so whatever was queued for it before the party began is
-        // dropped rather than run to completion.
-        stopped = { DesktopListenTogether.state.value.inParty },
+        stopped = { false },
     )
     private val commands = ConcurrentLinkedQueue<Command>()
     private val running = AtomicBoolean(true)
@@ -81,12 +79,7 @@ class DesktopPlaybackEngine(
     }
 
     init {
-        // Windows' endpoint watcher bumps the same signal from the OS's own push; Linux asks the
-        // kernel on a poll — see [DesktopLinuxAudioWatcher]. A device change reconfigures a
-        // playing line only when the line was opened on a per-device mixer that is no longer
-        // there; the plain `default` mixer follows the desktop's routing on its own under
-        // PipeWire, so it needs no help.
-        DesktopLinuxAudioWatcher.ensureStarted()
+        // Windows' endpoint watcher bumps this signal from the OS's own push.
         scope.launch {
             DesktopAudioDevices.changes.collect {
                 if (DesktopPlatform.isWindows) return@collect // its native side moves the stream itself

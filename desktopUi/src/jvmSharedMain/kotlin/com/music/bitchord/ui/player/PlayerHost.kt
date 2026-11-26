@@ -5,7 +5,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.unit.IntSize
 import com.music.bitchord.data.canvas.CanvasArtwork
-import com.music.bitchord.data.listentogether.PartyMember
 import com.music.bitchord.data.lyrics.LyricLine
 import com.music.bitchord.data.lyrics.LyricsSource
 import com.music.bitchord.data.model.Song
@@ -67,8 +66,6 @@ interface PlayerHost {
     /** The negotiated output format, as the pipeline row and the hi-res shine read it. */
     val outputFormat: StateFlow<OutputFormatUi>
 
-    /** The Listen Together party this device is in, as the player draws it. */
-    val party: StateFlow<PartyUi>
 
     suspend fun translateLyrics(
         trackId: String,
@@ -233,14 +230,6 @@ data class OutputFormatUi(
     val summary: String = "",
     /** Whether the negotiated output could carry more than 16-bit / 48 kHz. */
     val carriesHiRes: Boolean = false,
-)
-
-data class PartyUi(
-    val inParty: Boolean = false,
-    val controlsLocked: Boolean = false,
-    val members: List<PartyMember> = emptyList(),
-    val you: PartyMember? = null,
-    val code: String? = null,
 )
 
 sealed interface LyricsTranslationResult {

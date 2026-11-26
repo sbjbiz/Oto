@@ -41,38 +41,6 @@ import java.awt.MouseInfo
 
 // The window's own frame, drawn by the application rather than by the system.
 
-/** The strip where the system's title bar would have been. */
-@Composable
-internal fun DesktopTitleBar() {
-    // Collected rather than read: [DesktopTitleBarSetting.active] is a plain call, so a composable
-    // that only asks it never learns the answer changed.
-    val enabled by DesktopTitleBarSetting.enabled.collectAsState()
-    if (!DesktopPlatform.drawsOwnWindowFrame || !enabled) return
-    DesktopTitleBarDragArea(
-        Modifier
-            .fillMaxWidth()
-            .height(CAPTION_HEIGHT)
-            .desktopWindowGlass(),
-    ) {
-        Box(Modifier.fillMaxSize()) {
-            DesktopWindowButtons(Modifier.align(Alignment.TopEnd))
-        }
-    }
-}
-
-/** Whether there is a title bar at all. */
-internal object DesktopTitleBarSetting {
-
-    internal const val KEY = "window_title_bar"
-
-    private val _enabled = MutableStateFlow(false)
-
-    /** What Settings shows and writes. */
-    val enabled: StateFlow<Boolean> = _enabled
-
-    fun set(@Suppress("UNUSED_PARAMETER") value: Boolean) = Unit
-}
-
 /** What the caption buttons act on. */
 internal class DesktopWindowActions(
     val minimize: () -> Unit,

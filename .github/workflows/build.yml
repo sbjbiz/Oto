@@ -56,12 +56,12 @@ jobs:
           name: Oto-windows-x64
           path: dist/*
 
-      - name: Publish as the "latest" release
+      - name: Publish as release v1
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest dist/* --title "Oto ${{ steps.version.outputs.value }}" \
-            --notes "Built from ${{ github.sha }}. Download Oto-setup-x64.exe to install, or the portable zip to run without installing." \
+          gh release delete v1 --yes --cleanup-tag 2>/dev/null || true
+          gh release create v1 dist/* --title "Oto v1" \
+            --notes "Download Oto-setup-x64.exe to install, or Oto-portable-x64.zip to run without installing. Build ${{ steps.version.outputs.value }}." \
             --latest

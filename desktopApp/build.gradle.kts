@@ -37,11 +37,6 @@ private fun localProperty(name: String): String = rootProject.file("local.proper
 
 val desktopModuleIndexUrl = localProperty("MODULE_INDEX_URL")
 
-// Last.fm signs every request with these, so signing in from inside the app
-// needs them at hand. Supplied locally and never committed, as on Android.
-val listenTogetherServer = localProperty("LISTEN_TOGETHER_SERVER")
-val lastfmApiKey = localProperty("LASTFM_API_KEY")
-val lastfmSecret = localProperty("LASTFM_SECRET")
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -51,9 +46,6 @@ plugins {
 }
 
 dependencies {
-    // Already on the classpath through the NewPipe extractor.
-    implementation("org.jsoup:jsoup:1.22.2")
-    implementation("com.google.zxing:core:3.5.3")
 
     implementation(project(":shared"))
     // Its own copy of the player and pages; the phone and TV keep :sharedUi.
@@ -95,23 +87,13 @@ dependencies {
     implementation("io.ktor:ktor-client-core:3.0.3")
     implementation("io.ktor:ktor-client-cio:3.0.3")
     implementation("io.ktor:ktor-client-content-negotiation:3.0.3")
-    // Listen Together speaks over a WebSocket; the Discord gateway already uses the same engine.
-    implementation("io.ktor:ktor-client-websockets:3.0.3")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.3")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
     implementation("org.slf4j:slf4j-nop:2.0.16")
 
-    // Browsers keep their cookies in SQLite, and importing a session from one is how this app signs
-    // in — see DesktopBrowserCookies.
-    implementation("org.xerial:sqlite-jdbc:3.47.1.0")
-    // Chromium protects its Windows master key with DPAPI. JNA's platform helpers let the app
-    // unwrap that key in the same Windows user session without invoking a shell or exposing it.
+    // DPAPI, for the settings kept protected on disk.
     implementation("net.java.dev.jna:jna-platform:5.19.1")
-
-    // Linux desktop media controls use the standard session-bus MPRIS interfaces.
-    implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
-    implementation("com.github.hypfvieh:dbus-java-transport-junixsocket:5.2.0")
 
     // Same URL deobfuscation helper used by Android's StreamResolver.
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")

@@ -27,7 +27,6 @@ kotlin {
                 // now call the same code, so they resolve the same libraries.
                 api("io.ktor:ktor-client-core:3.5.2")
                 api("io.ktor:ktor-client-okhttp:3.5.2")
-                api("io.ktor:ktor-client-websockets:3.5.2")
                 api("io.ktor:ktor-client-content-negotiation:3.5.2")
                 api("io.ktor:ktor-serialization-kotlinx-json:3.5.2")
                 api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")

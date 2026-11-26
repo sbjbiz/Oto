@@ -20,9 +20,6 @@ internal class DesktopOverlays {
 
     /** Which device playback is sent to. */
     var audioOutput by mutableStateOf(false)
-
-    /** The party this device is listening with. */
-    var listenTogether by mutableStateOf(false)
     var songMenu by mutableStateOf(false)
     var downloadManager by mutableStateOf(false)
     var replay by mutableStateOf(false)
@@ -38,11 +35,6 @@ internal class DesktopOverlays {
      * wherever it was opened from.
      */
     var settingsPage by mutableStateOf<DesktopSettingsPage?>(null)
-    var lastfmLogin by mutableStateOf(false)
-    var listenBrainzToken by mutableStateOf(false)
-    var discordToken by mutableStateOf(false)
-    var accounts by mutableStateOf(false)
-    var signIn by mutableStateOf(false)
 
     /** The column beside the page with the lyrics or the queue in it, or none. */
     var sidePanel by mutableStateOf<DesktopSidePanel?>(null)
@@ -61,10 +53,7 @@ internal enum class DesktopSettingsPage {
     MAIN,
     EQUALIZER,
     AUDIO_OUTPUT,
-    LISTEN_TOGETHER,
     LYRICS_SOURCES,
     TRANSLATION_LANGUAGE,
-    SPOTIFY_CANVAS,
-    INTEGRATIONS,
     LICENSES,
 }

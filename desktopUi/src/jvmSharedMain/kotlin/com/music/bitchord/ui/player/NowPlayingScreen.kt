@@ -645,8 +645,6 @@ private fun SlidingPlayerDeck(
 @OptIn(ExperimentalHazeApi::class, ExperimentalHazeMaterialsApi::class)
 fun NowPlayingScreen(
     song: Song,
-    /** Who selected this track in the active Listen Together session. */
-    playedBy: String? = null,
     isPlaying: Boolean,
     isLoading: Boolean,
     /**
@@ -670,19 +668,11 @@ fun NowPlayingScreen(
     shuffleEnabled: Boolean,
     autoplayEnabled: Boolean,
     signedIn: Boolean,
-    accountName: String?,
     likeStatus: LikeStatus,
     onToggleLike: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
-    /**
-     * A control the host has taken away was reached for anyway.
-     *
-     * The buttons are gone while a party is locked, but a swipe has no button
-     * to remove — so the gesture answers instead of silently doing nothing.
-     */
-    onBlockedControl: () -> Unit,
     onSeek: (Long) -> Unit,
     /**
      * Seek to a fraction of the track, for the scrubber.
@@ -721,14 +711,6 @@ fun NowPlayingScreen(
     onOpenArtist: (browseId: String?, name: String) -> Unit,
     /** Return to the queue-level page named by the caption above the player. */
     onOpenPlaybackSource: () -> Unit,
-    /**
-     * Open Listen Together, from the party half of the output capsule.
-     *
-     * The player does not decide whether it has to get out of the way first:
-     * the settings page it opens is drawn under the player sheet, and closing
-     * the sheet is the caller's business.
-     */
-    onListenTogether: () -> Unit,
     lyrics: List<LyricLine>?,
     lyricsSource: LyricsSource?,
     lyricsProviderStates: Map<LyricsSource, LyricsProviderState>,
@@ -818,15 +800,8 @@ fun NowPlayingScreen(
     val playerOverflow = playerOverflowOpen ?: remember { mutableStateOf(false) }
     // Gated on the Bluetooth permission the first time — see [rememberOutputPicker].
     val openAudioOutput = rememberOutputPicker { showAudioOutput = true }
-    // Listening in a party whose host has taken the controls: the transport
-    // keeps only play/pause, which from here moves this device alone.
-    val controlsLocked = rememberControlsLocked()
-    var showListenTogetherMembers by remember { mutableStateOf(false) }
-    // Who's actually in the party is worth a look before the settings page —
-    // see [ListenTogetherMembersSheet]. Only meaningful once there is a party
-    // to show, so the pill and the caption fall back to [onListenTogether]
-    // itself (create/join) when there isn't one.
-    val openListenTogetherMembers: () -> Unit = { showListenTogetherMembers = true }
+    val controlsLocked = false
+    val accountName: String? = null
 
     val syncedLyricsEnabled by PlayerSettings.syncedLyrics.collectAsStateWithLifecycle()
     val lyricsOffsetMs by PlayerSettings.lyricsOffsetMs.collectAsStateWithLifecycle()
@@ -1093,8 +1068,6 @@ fun NowPlayingScreen(
     PlayerBackHandler(enabled = showAudioOutput) { showAudioOutput = false }
 
     PlayerBackHandler(enabled = showLyricsProviders) { showLyricsProviders = false }
-
-    PlayerBackHandler(enabled = showListenTogetherMembers) { showListenTogetherMembers = false }
 
     PlayerBackHandler(enabled = showAudioPipeline) { showAudioPipeline = false }
 
@@ -1488,13 +1461,10 @@ fun NowPlayingScreen(
     // position into the same space as the two edges above.
     var dismissBandSpace by remember { mutableStateOf<LayoutCoordinates?>(null) }
 
-    // Where the caption above the credits leads: the party for a track someone
-    // else queued, the queue itself for a queue-built session, and otherwise
-    // back to the album or playlist the session was started from.
+    // Where the caption above the credits leads: the queue itself for a queue-built session,
+    // otherwise back to the album or playlist the session was started from.
     val openPlaybackOrigin: () -> Unit = {
-        if (playedBy != null) {
-            onListenTogether()
-        } else if (song.playbackSourceType == PlaybackSourceType.QUEUE) {
+        if (song.playbackSourceType == PlaybackSourceType.QUEUE) {
             queueOpen = true
             closeLyrics()
         } else {
@@ -1521,7 +1491,6 @@ fun NowPlayingScreen(
                     // Still tracks the finger and still springs back, so the
                     // sleeve does not feel dead — it just says why it did not
                     // move on.
-                    controlsLocked -> if (crossed) onBlockedControl()
                     total <= -swipeThreshold -> {
                         haptics.play(Haptic.SkipNext)
                         onNext()
@@ -1570,8 +1539,6 @@ fun NowPlayingScreen(
             onCycleRepeat = onCycleRepeat,
             onToggleAutoplay = onToggleAutoplay,
             onOpenOutput = openAudioOutput,
-            onListenTogether = onListenTogether,
-            onOpenListenTogetherMembers = openListenTogetherMembers,
         )
         // Keep the current output caption visible in every state.
         Spacer(Modifier.height(18.dp))
@@ -1582,7 +1549,6 @@ fun NowPlayingScreen(
             OutputCaption(
                 accountName = accountName,
                 onOpenOutput = openAudioOutput,
-                onOpenMembers = openListenTogetherMembers,
             )
         }
     }
@@ -1622,16 +1588,6 @@ fun NowPlayingScreen(
                 onDismiss = { showCast = false },
             )
         }
-        if (showListenTogetherMembers) {
-            ListenTogetherMembersSheet(
-                hazeState = playerHaze,
-                onDismiss = { showListenTogetherMembers = false },
-                onManage = {
-                    showListenTogetherMembers = false
-                    onListenTogether()
-                },
-            )
-        }
         if (lyricsOffsetOpen) {
             LyricsOffsetSheet(
                 hazeState = playerHaze,
@@ -1662,15 +1618,7 @@ fun NowPlayingScreen(
                     onToggleShuffle = onToggleShuffle,
                     onCycleRepeat = onCycleRepeat,
                     onToggleAutoplay = onToggleAutoplay,
-                    // Each of these leaves the drawer: the party page closes the
-                    // player, and the host holds this flag, so a drawer left up
-                    // would greet the next opening of the player.
                     onOpenOutput = { playerOverflow.value = false; openAudioOutput() },
-                    onListenTogether = { playerOverflow.value = false; onListenTogether() },
-                    onOpenListenTogetherMembers = {
-                        playerOverflow.value = false
-                        openListenTogetherMembers()
-                    },
                     // Lyrics and queue are one row on the song menu now, not
                     // glyphs here; this drawer keeps the two capsules.
                     showLyricsAndQueue = false,

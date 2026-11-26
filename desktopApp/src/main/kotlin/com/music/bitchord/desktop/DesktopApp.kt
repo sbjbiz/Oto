@@ -38,8 +38,6 @@ import com.music.bitchord.playback.PlaybackPosition
 import com.music.bitchord.playback.QueueSource
 import com.music.bitchord.playback.QueueTimeline
 import com.music.bitchord.playback.QueueTimeline.asQueueEntry
-import com.music.bitchord.data.listentogether.partyQueueIndexOf
-import com.music.bitchord.data.listentogether.partyUpcomingAfter
 import com.music.bitchord.ui.LyricsProviderState
 import com.music.bitchord.data.lyrics.LyricsSource
 import com.music.bitchord.ui.player.LyricsSidePanel
@@ -293,15 +291,9 @@ import com.music.bitchord.data.model.UiState
 import com.music.bitchord.data.model.UserPlaylist
 import com.music.bitchord.data.model.artworkAt
 import com.music.bitchord.data.model.durationMillis
-import com.music.bitchord.data.model.isMatchMissing
-import com.music.bitchord.data.model.isMatchPending
 import com.music.bitchord.data.model.isSameTrackAs
 import com.music.bitchord.data.model.playingRowMatcher
-import com.music.bitchord.data.model.isUnresolvedSpotify
-import com.music.bitchord.data.spotify.SPOTIFY_PAGE_PREFIX
-import com.music.bitchord.data.spotify.SpotifyLibrary
 import com.music.bitchord.sharedui.resources.Res as SharedRes
-import com.music.bitchord.sharedui.resources.spotify_logo
 import com.music.bitchord.data.model.withoutRepeatsOf
 import com.music.bitchord.data.settings.AutomixPerformanceMode
 import com.music.bitchord.data.settings.LastPlayerScreen
@@ -425,7 +417,6 @@ private const val BACK_RESTARTS_AFTER_MS = 10_000L
 private const val SKIP_MIX_ON_SKIP_SECONDS = 15
 
 /** How long the supplier waits for the server to echo an AutoPlay queue addition. */
-private const val PARTY_AUTOPLAY_ECHO_TIMEOUT_MS = 5_000L
 
 /** The phone gives one empty station response a delayed second chance. */
 private const val AUTOPLAY_EMPTY_REFRESH_DELAY_MS = 2_000L
@@ -510,13 +501,6 @@ private enum class DesktopRepeatMode {
 @Composable
 fun OtoDesktopApp() {
     val scope = rememberCoroutineScope()
-    // Filled once the audio engine exists. Local playback helpers use this single hook so every
-    // transport and queue gesture reaches Listen Together without duplicating protocol logic.
-    val partySyncHolder = remember { arrayOfNulls<DesktopPartySync>(1) }
-    val partyState by DesktopListenTogether.state.collectAsState()
-    var personalQueueStash by remember { mutableStateOf<DesktopQueue?>(null) }
-    var personalPositionStash by remember { mutableStateOf(0L) }
-    var personalPlayingStash by remember { mutableStateOf(false) }
     val persistence = remember { DesktopPersistence() }
     var destination by remember { mutableStateOf(DesktopDestination.LISTEN_NOW) }
     var query by remember { mutableStateOf("") }
@@ -553,9 +537,6 @@ fun OtoDesktopApp() {
     val libraryGridState = rememberLazyGridState()
     /** A Library shelf's "Show all", open as a grid in place of the page. */
     var libraryShowAll by remember { mutableStateOf<HomeShelf?>(null) }
-    /** What the Spotify grid is waiting on, or why it is empty; null once its playlists are in. */
-    var spotifyLibraryStatus by remember { mutableStateOf<String?>(null) }
-    var spotifyImportOpen by remember { mutableStateOf(false) }
     /** Where the one back button in the top bar goes: every place visited, oldest first. */
     val navHistory = remember { mutableStateListOf<DesktopNavEntry>() }
     /** Set while [goBack] puts a place back, so that move is not itself recorded as a visit. */
@@ -584,14 +565,11 @@ fun OtoDesktopApp() {
     }
     // The order the queue was in before shuffle rearranged it, so the toggle can be undone.
     var preShuffleOrder by remember { mutableStateOf<List<String>>(emptyList()) }
-    // One party AutoPlay top-up at a time; see topUpPartyAutoplay.
-    val partyAutoplayLock = remember { Mutex() }
     val queue = liveQueue.songs
     // What was played on this computer. The account's own history replaces it
     // while signed in — see [remoteHistory] — because that is what Android's
     // History screen is and what makes a phone and a desktop agree.
     var history by remember { mutableStateOf(persistence.history()) }
-    var remoteHistory by remember { mutableStateOf<List<Song>>(emptyList()) }
     var likedIds by remember { mutableStateOf(persistence.likedIds()) }
     // In-flight tail of the Liked Music chain; replaced whenever the library is fetched again.
     var likedSyncJob by remember { mutableStateOf<Job?>(null) }
@@ -604,7 +582,7 @@ fun OtoDesktopApp() {
     var playlists by remember { mutableStateOf(persistence.playlists()) }
     var statsRevision by remember { mutableStateOf(0L) }
     var replayPeriod by remember { mutableStateOf(DesktopReplayPeriod.ALL_TIME) }
-    val replayHolder = remember { DesktopAccounts.active()?.name.orEmpty() }
+    val replayHolder = ""
     var replaySummary by remember { mutableStateOf(DesktopListeningStats.summary()) }
     var statsCountedSongs by remember { mutableStateOf<Set<String>>(emptySet()) }
     var playlistTarget by remember { mutableStateOf<Song?>(null) }
@@ -669,11 +647,6 @@ fun OtoDesktopApp() {
     // The blob backdrop the mesh replaced, kept as an opt-out.
     var legacyMeshGradient by remember { mutableStateOf(persistence.boolean("legacy_mesh_gradient", false)) }
     var animatedCanvas by remember { mutableStateOf(persistence.boolean("animated_canvas", true)) }
-    var spotifyCanvasCookie by remember { mutableStateOf(DesktopSpotifyToken.cookie()) }
-    // Held here rather than by the Integrations page, so leaving the page does not close the
-    // sign-in window.
-    var spotifySignInJob by remember { mutableStateOf<Job?>(null) }
-    var spotifySignInError by remember { mutableStateOf<String?>(null) }
     var showNerdStats by remember { mutableStateOf(persistence.boolean("show_nerd_stats", false)) }
     var syncedLyrics by remember {
         mutableStateOf(persistence.boolean(DesktopLyricsClient.KEY_SYNCED_LYRICS, true))
@@ -687,18 +660,11 @@ fun OtoDesktopApp() {
     var lyricsOrder by remember { mutableStateOf(persistence.lyricsSourceOrder()) }
     var lyricsOn by remember { mutableStateOf(persistence.lyricsEnabledSources()) }
     var fullBleedArtwork by remember { mutableStateOf(persistence.boolean("full_bleed_artwork", false)) }
-    var accounts by remember { mutableStateOf(DesktopAccounts.accounts()) }
-    var activeAccountId by remember { mutableStateOf(DesktopAccounts.activeAccountId()) }
-    var activeProfileId by remember { mutableStateOf(DesktopAccounts.activeProfileId()) }
-    var signInBusy by remember { mutableStateOf<String?>(null) }
-    var signInError by remember { mutableStateOf<String?>(null) }
-    var webSignInJob by remember { mutableStateOf<Job?>(null) }
-    val activeAccount = accounts.firstOrNull { it.accountId == activeAccountId } ?: accounts.firstOrNull()
     // The account's own library, fetched once a session is in force.
     var libraryState by remember { mutableStateOf<UiState<LibraryPage>>(UiState.Loading) }
     // Whether YouTube is actually accepting the session, which is not the same as having an account
     // saved.
-    var youtubeSignedIn by remember { mutableStateOf(false) }
+    val youtubeSignedIn = false
     // Set by an edit that the library feed has not caught up with yet.
     var libraryStale by remember { mutableStateOf(false) }
     // Bumped when the session changes underneath, so the loader below re-runs without anything it
@@ -747,12 +713,6 @@ fun OtoDesktopApp() {
         libraryState = UiState.Success(page.copy(shelves = shelves.toList()))
     }
 
-    // Whoever was signed in last is signed in again, before anything asks YouTube for something
-    // that depends on it.
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) { DesktopAccounts.activate() }
-        sessionRevision++
-    }
     var audioQuality by remember { mutableStateOf(persistence.audioQuality()) }
     var sourceConfigs by remember { mutableStateOf(persistence.sourceConfigs()) }
     var sourceStatus by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
@@ -802,10 +762,6 @@ fun OtoDesktopApp() {
     lateinit var playbackEngine: DesktopPlaybackEngine
 
     fun saveQueue() {
-        // A party queue is temporary. The phone keeps the listener's own queue aside and so does
-        // desktop; never let a shared running order overwrite the queue restored after leaving or
-        // after a process restart.
-        if (DesktopListenTogether.state.value.inParty) return
         persistence.saveQueue(liveQueue.songs)
         persistence.saveString("queue_index", liveQueue.index.toString())
     }
@@ -818,116 +774,27 @@ fun OtoDesktopApp() {
         saveQueue()
         persistence.saveHistory(history)
         playbackEngine.load(song, startPlaying)
-        partySyncHolder[0]?.onLocalIntent(song.videoId)
-        scope.launch { DesktopScrobbling.updateNowPlaying(song) }
     }
 
-    fun partyTrackChangeBlocked(): Boolean {
-        if (!DesktopListenTogether.state.value.controlsLocked) return false
-        DesktopPlayerHost.showMessage("Only the party host can change playback")
-        return true
-    }
-
-    /**
-     * The phone's party queue for a track picked here: that track, then what the party's members
-     * queued by hand. Never the album around it, and never the last track's AutoPlay — the party
-     * shares one running order, and the phone builds it exactly this way.
-     */
-    fun partyPlaybackQueue(tapped: Song): List<Song> {
-        val party = DesktopListenTogether.state.value
-        val upcoming = partyUpcomingAfter(party.queue, party.playback, party.playback.track?.videoId)
-        return QueueTimeline.buildPartyPlaybackQueue(
-            tapped,
-            tapped.queueSource(),
-            DesktopQueue.adopt(liveQueue.upcoming, upcoming.map { it.toDesktopSong() }),
-        )
-    }
 
     var versionSwitching by remember { mutableStateOf(false) }
 
     /** A song played on its own — from a search row, a shelf card, history. */
     fun playSong(song: Song, startPlaying: Boolean = true, source: DesktopQueueSource? = null) {
-        if (partyTrackChangeBlocked()) return
         val tapped = canonicalSong(song).withSource(source)
-        val songs = if (DesktopListenTogether.state.value.inParty) {
-            partyPlaybackQueue(tapped)
-        } else {
-            // The phone's one-off queue: the song, then whatever the listener had queued by hand.
-            QueueTimeline.buildOneOffQueue(liveQueue.songs, liveQueue.index, tapped, tapped.queueSource())
-        }
+        // The phone's one-off queue: the song, then whatever the listener had queued by hand.
+        val songs = QueueTimeline.buildOneOffQueue(liveQueue.songs, liveQueue.index, tapped, tapped.queueSource())
         liveQueue = DesktopQueue(songs, index = 0)
         preShuffleOrder = emptyList()
         playCurrent(startPlaying)
     }
 
-    /** Opens the Spotify sign-in window for an `sp_dc`, or closes the one already open. */
-    fun signInToSpotify() {
-        spotifySignInJob?.let {
-            it.cancel()
-            return
-        }
-        spotifySignInError = null
-        spotifySignInJob = scope.launch {
-            try {
-                val cookie = DesktopWebSignIn.captureSpotify()
-                DesktopSpotifyToken.setCookie(cookie)
-                spotifyCanvasCookie = cookie
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                DesktopTrackLog.log("sign-in: Spotify failed: ${failure.message}")
-                spotifySignInError = failure.message ?: "Could not complete the Spotify sign-in."
-            } finally {
-                spotifySignInJob = null
-            }
-        }
-    }
-
-    /** Takes a captured cookie all the way to a saved account. */
-    suspend fun signIn(cookie: String, label: String, sourceProfile: String? = null) {
-        signInError = null
-        signInBusy = label
-        try {
-            val scope = withContext(Dispatchers.IO) { DesktopYouTubeSession.adoptSessionScope(cookie) }
-            if (scope == null) {
-                signInError = "$label is not signed in to YouTube Music."
-                return
-            }
-            DesktopYouTubeAuth.adopt(scope)
-            // Asked with the session in force, so they describe the account that was just captured
-            // rather than nobody in particular.
-            val details = DesktopSearchClient.accountMenu().getOrNull()?.let(DesktopAccountParser::account)
-            val channels = DesktopSearchClient.accountsList().getOrNull()
-                ?.let(DesktopAccountParser::channels)
-                .orEmpty()
-            // Off the UI thread: saving reaches the platform keyring over D-Bus, and a blocking
-            // call to another process is not something to do on the thread that is drawing.
-            withContext(Dispatchers.IO) { DesktopAccounts.save(cookie, scope, details, channels, sourceProfile) }
-            accounts = withContext(Dispatchers.IO) { DesktopAccounts.accounts() }
-            activeAccountId = DesktopAccounts.activeAccountId()
-            activeProfileId = DesktopAccounts.activeProfileId()
-            overlays.signIn = false
-            overlays.accounts = false
-        } finally {
-            signInBusy = null
-        }
-    }
-
     fun playSongs(songs: List<Song>, startIndex: Int = 0, source: DesktopQueueSource? = null) {
-        // A Spotify playlist's rows still being matched to YouTube Music, or with no match, have
-        // nothing to play: they stay out of the queue, and the pick moves to the next playable row.
-        val resolved = songs.withIndex().filterNot { it.value.isUnresolvedSpotify }
+        val resolved = songs.withIndex().toList()
         if (resolved.isEmpty()) return
-        if (partyTrackChangeBlocked()) return
         val playable = resolved.map { canonicalSong(it.value).withSource(source) }
         // Past the end still means the last row, as the clamp here always did.
         val at = resolved.indexOfFirst { it.index >= startIndex }.takeIf { it >= 0 } ?: resolved.lastIndex
-        if (DesktopListenTogether.state.value.inParty) {
-            liveQueue = DesktopQueue(partyPlaybackQueue(playable[at]), index = 0)
-            preShuffleOrder = emptyList()
-            playCurrent()
-            return
-        }
         // The phone's context queue: the album up to the pick, the pick, what the listener had
         // queued by hand, then the rest of the album.
         val built = QueueTimeline.buildContextQueue(
@@ -950,7 +817,6 @@ fun OtoDesktopApp() {
     /** Moves within the queue, dropping whatever a forward jump passed over. */
     fun playQueueIndex(target: Int) {
         if (target !in liveQueue.songs.indices) return
-        if (partyTrackChangeBlocked()) return
         liveQueue = liveQueue.jumpTo(target)
         playCurrent()
     }
@@ -1046,23 +912,13 @@ fun OtoDesktopApp() {
 
     /**
      * Queues a track by hand, into the listener's own section — "Play next" at its head, "Add to
-     * queue" at its end, above the album and AutoPlay either way. In a party, held to the same
-     * twenty-five upcoming songs the phone and the server allow.
+     * queue" at its end, above the album and AutoPlay either way.
      */
     fun enqueue(song: Song, next: Boolean) {
-        val party = DesktopListenTogether.state.value
-        if (party.controlsLocked) return
-        if (party.inParty && liveQueue.upcoming.size >= DesktopPartySync.MAX_PARTY_UPCOMING_QUEUE) {
-            DesktopPlayerHost.showMessage(
-                "Queue is full (maximum ${DesktopPartySync.MAX_PARTY_UPCOMING_QUEUE} songs in party)",
-            )
-            return
-        }
         val queued = canonicalSong(song).copy(radioName = liveQueue.current?.radioName)
             .withSource(currentQueueSource())
         liveQueue = liveQueue.enqueue(queued, playNext = next)
         saveQueue()
-        partySyncHolder[0]?.onLocalIntent()
     }
 
     /** Slots a track in right after the one playing. */
@@ -1073,11 +929,9 @@ fun OtoDesktopApp() {
 
     /** Starts the station YouTube Music builds around one track. */
     fun startRadio(song: Song) {
-        if (partyTrackChangeBlocked()) return
         val seed = canonicalSong(song).copy(radioName = song.title)
         scope.launch {
-            // AutoPlay's section behind the seed, as the phone queues a station — which is also
-            // what lets a party share it: a context tail is never published.
+            // AutoPlay's section behind the seed, as the phone queues a station.
             val related = DesktopAutoplay.tracksFor(listOf(seed), seed, INITIAL_RADIO_TRACKS)
                 .getOrNull()
                 .orEmpty()
@@ -1085,11 +939,9 @@ fun OtoDesktopApp() {
                 DesktopTrackLog.log("radio: nothing to build a station on for '${song.title}'")
                 return@launch
             }
-            if (partyTrackChangeBlocked()) return@launch
             if (liveQueue.current?.videoId == seed.videoId) {
                 liveQueue = DesktopQueue(listOf(liveQueue.current!!) + related, index = 0)
                 saveQueue()
-                partySyncHolder[0]?.onLocalIntent()
             } else {
                 val station = listOf(seed.asQueueEntry(QueueTier.CONTEXT)) + related
                 liveQueue = if (shuffle) DesktopQueue.shuffledStartingAt(station, 0) else DesktopQueue(station, 0)
@@ -1142,7 +994,7 @@ fun OtoDesktopApp() {
     // than racing it; and a loading page restored by Back fetches again.
     LaunchedEffect(openedCollection?.browseId, openedCollection?.loading, collectionReloads) {
         val pending = openedCollection
-            ?.takeIf { it.loading && !it.browseId.startsWith(SPOTIFY_PAGE_PREFIX) }
+            ?.takeIf { it.loading }
             ?: return@LaunchedEffect
         collectionError = null
         DesktopSearchClient.browse(
@@ -1162,50 +1014,10 @@ fun OtoDesktopApp() {
         )
     }
 
-    // A Spotify playlist: its tracks, then each one's YouTube Music match. Keyed like the browse
-    // above, so opening another page cancels it, and Back to a page left half matched (or Retry
-    // on one that failed) reads it again.
-    LaunchedEffect(openedCollection?.browseId, collectionReloads) {
-        val page = openedCollection?.takeIf { it.browseId.startsWith(SPOTIFY_PAGE_PREFIX) }
-            ?: return@LaunchedEffect
-        if (!page.loading && page.songs.none { it.isMatchPending }) return@LaunchedEffect
-        collectionError = null
-        fun update(change: (DesktopCollection) -> DesktopCollection) {
-            openedCollection?.takeIf { it.browseId == page.browseId }?.let { openedCollection = change(it) }
-        }
-        runCatching { loadSpotifyPlaylist(page.browseId.removePrefix(SPOTIFY_PAGE_PREFIX), ::update) }
-            .onFailure { failure ->
-                if (failure is kotlinx.coroutines.CancellationException) throw failure
-                DesktopTrackLog.log("spotify: playlist ${page.title} failed: ${failure.message}")
-                collectionError = failure.message ?: "Could not open ${page.title}"
-                // The error page stands in for the list only while there is no list.
-                update { if (it.songs.isEmpty()) it.copy(loading = true) else it }
-            }
-    }
 
     fun openAlbum(browseId: String) = openCollection(browseId)
 
-    /** Copies the track's YouTube Music link. */
-    fun shareSong(song: Song) {
-        DesktopExternalLinks.copy("https://music.youtube.com/watch?v=${song.videoId}")
-        DesktopTrackLog.log("copied a link to '${song.title}'")
-    }
 
-    /**
-     * The link YouTube Music's own overflow shares for a release, built from the browse id rather
-     * than fetched — nothing about it depends on the tracks or the account. Albums and playlists
-     * only: an artist's is a channel link, not a release.
-     */
-    fun shareCollection(collection: DesktopCollection) {
-        val id = collection.browseId
-        val url = when (collection.type) {
-            BrowseType.PLAYLIST -> "https://music.youtube.com/playlist?list=${id.removePrefix("VL")}"
-            BrowseType.ALBUM -> "https://music.youtube.com/browse/$id"
-            else -> return
-        }
-        DesktopExternalLinks.copy(url)
-        DesktopTrackLog.log("copied a link to '${collection.title}'")
-    }
 
     fun downloadSong(song: Song) {
         // A second tap on something already queued or running calls it off.
@@ -1230,64 +1042,19 @@ fun OtoDesktopApp() {
     fun downloadAll(songs: List<Song>) {
         val have = downloads.map(Song::videoId).toSet()
         DesktopDownloadQueue.enqueueAll(
-            songs.filterNot { it.videoId in have || it.localPath != null || it.isUnresolvedSpotify },
+            songs.filterNot { it.videoId in have || it.localPath != null },
         )
     }
 
     /** Keeps a station queued ahead of whatever is playing. */
 
-    /**
-     * How many AutoPlay tracks the party already has waiting after [videoId], or null outside a
-     * party or while its queue does not hold that track yet.
-     */
-    fun partyAutoplayWaiting(party: DesktopListenTogether.State, videoId: String): Int? {
-        if (!party.inParty) return null
-        if (partyQueueIndexOf(party.queue, party.playback, videoId) < 0) return null
-        return partyUpcomingAfter(party.queue, party.playback, videoId).count { it.fromAutoplay }
-    }
-
-    /**
-     * Sends [suggestions] to the party and waits for them to come back; the phone's
-     * `topUpPartyAutoplay`.
-     *
-     * Serialised, and the send-and-wait not cancellable, because a track change cancels the load in
-     * flight and starts another: the second used to read the party before the first batch had
-     * echoed, find nothing waiting, and send the same station again — every suggestion twice, on
-     * every device. Holding the lock until the echo means the next top-up reads a queue that
-     * already has these in it, and filters against it.
-     */
-    suspend fun topUpPartyAutoplay(currentId: String, suggestions: List<Song>): Boolean =
-        partyAutoplayLock.withLock {
-            withContext(NonCancellable) {
-                val party = DesktopListenTogether.state.value
-                val waiting = partyUpcomingAfter(party.queue, party.playback, currentId)
-                val waitingIds = waiting.mapTo(HashSet()) { it.videoId }
-                val room = MAX_QUEUED_AUTOPLAY - waiting.count { it.fromAutoplay }
-                val fresh = suggestions.filterNot { it.videoId in waitingIds }.take(room.coerceAtLeast(0))
-                if (fresh.isEmpty()) return@withContext true
-                DesktopListenTogether.queueAdd(fresh.map { it.toPartyTrack(0L) })
-                val added = fresh.first().videoId
-                withTimeoutOrNull(PARTY_AUTOPLAY_ECHO_TIMEOUT_MS) {
-                    DesktopListenTogether.state.first { state -> state.queue.items.any { it.videoId == added } }
-                } != null
-            }
-        }
-
     fun loadAutoplaySongs(playFirst: Boolean = false) {
         val current = selectedSong ?: return
-        val party = DesktopListenTogether.state.value
-        if (!DesktopAutoplay.enabled(party, autoplay) ||
-            repeatMode == DesktopRepeatMode.ALL ||
-            (party.inParty && DesktopAutoplay.supplierId(party) != party.you?.memberId)
-        ) return
+        if (!autoplay || repeatMode == DesktopRepeatMode.ALL) return
 
         if (dontRepeatSuggestions) sessionSongHistory += current
 
-        // In a party the server's queue is the one being topped up, and this computer's copy of it
-        // lags by however long reconcile is held off. Counted from the copy, a batch that had
-        // already landed read as missing and the same station went out again.
-        val queued = partyAutoplayWaiting(party, current.videoId)
-            ?: liveQueue.songs.drop(liveQueue.index + 1).count { it.fromAutoplay }
+        val queued = liveQueue.songs.drop(liveQueue.index + 1).count { it.fromAutoplay }
         val needed = MAX_QUEUED_AUTOPLAY - queued
         if (needed <= 0 && !playFirst) return
         // One request per seed.
@@ -1301,15 +1068,12 @@ fun OtoDesktopApp() {
             while (isActive) {
                 DesktopTrackLog.log("autoplay: building a station from '${current.title}'")
                 val at = liveQueue.songs.size
-                // What the queue holds — the party's too — plus everything this session has
-                // already offered.
-                val partyQueue = DesktopListenTogether.state.value
-                    .takeIf { it.inParty }?.queue?.items.orEmpty().map { it.toDesktopSong() }
+                // What the queue holds, plus everything this session has already offered.
                 val suggestions = DesktopAutoplay.tracksFor(
                     existing = if (dontRepeatSuggestions) {
-                        liveQueue.songs + partyQueue + sessionSongHistory
+                        liveQueue.songs + sessionSongHistory
                     } else {
-                        liveQueue.songs + partyQueue
+                        liveQueue.songs
                     },
                     seedSong = current,
                     limit = remaining,
@@ -1319,11 +1083,7 @@ fun OtoDesktopApp() {
                 }
                 // The listener may have moved on while the station was being fetched; appending
                 // then would attach it to the wrong seed.
-                val latestParty = DesktopListenTogether.state.value
-                if (selectedSong?.videoId != current.videoId ||
-                    !DesktopAutoplay.enabled(latestParty, autoplay) ||
-                    (latestParty.inParty && DesktopAutoplay.supplierId(latestParty) != latestParty.you?.memberId)
-                ) return@launch
+                if (selectedSong?.videoId != current.videoId || !autoplay) return@launch
                 if (suggestions.isEmpty()) {
                     DesktopTrackLog.log("autoplay: no station came back for '${current.title}'")
                     // Match the phone's bounded recovery: retry once after a short delay, but only
@@ -1340,23 +1100,10 @@ fun OtoDesktopApp() {
                     DesktopQueueSource(it, current.playbackSourceType ?: PlaybackSourceType.QUEUE, current.playbackSourceId)
                 }
                 val queuedSuggestions = suggestions.map { it.withSource(inherited) }
-                if (latestParty.inParty) {
-                    // Match the phone: the server owns the party queue. Do not mutate this one
-                    // device first; queueAdd is echoed back and all members apply it atomically.
-                    val landed = topUpPartyAutoplay(current.videoId, queuedSuggestions)
-                    if (!landed) {
-                        autoplaySeed = null
-                        DesktopTrackLog.log("autoplay: party refused the queue top-up; retry is armed")
-                        return@launch
-                    }
-                    if (playFirst) DesktopListenTogether.next()
-                } else {
-                    liveQueue = liveQueue.append(queuedSuggestions)
-                    saveQueue()
-                    // The mix continues from where it was added rather than starting a queue of
-                    // its own.
-                    if (playFirst) playQueueIndex(at)
-                }
+                liveQueue = liveQueue.append(queuedSuggestions)
+                saveQueue()
+                // The mix continues from where it was added rather than starting a queue of its own.
+                if (playFirst) playQueueIndex(at)
                 if (dontRepeatSuggestions) sessionSongHistory += suggestions
                 DesktopTrackLog.log(
                     "autoplay: queued ${suggestions.size} after '${current.title}'",
@@ -1376,19 +1123,11 @@ fun OtoDesktopApp() {
      * already playing rather than being refused as one this seed has been loaded for.
      */
     fun setAutoplay(enabled: Boolean) {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         autoplay = enabled
         persistence.saveBoolean("autoplay", enabled)
         autoplayJob?.cancel()
         autoplayJob = null
         autoplaySeed = null
-        if (DesktopListenTogether.state.value.inParty) {
-            // As on the phone, the server owns the effective setting and queue while connected.
-            // Keep the personal preference for after leaving, but do not trim or top up this one
-            // device ahead of the server's state broadcast.
-            DesktopListenTogether.setAutoplay(enabled)
-            return
-        }
         if (enabled) {
             loadAutoplaySongs()
         } else {
@@ -1401,7 +1140,6 @@ fun OtoDesktopApp() {
     }
 
     fun playNext() {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         // Automix on skip: when enabled and the next deck is already prepared, blend into it over a
         // short crossfade instead of cutting. The blend's own hand-off advances the queue, so a
         // successful mix returns here without touching liveQueue; anything else falls through to the
@@ -1424,19 +1162,16 @@ fun OtoDesktopApp() {
                 liveQueue = liveQueue.copy(index = 0)
                 playCurrent()
             }
-            DesktopAutoplay.enabled(DesktopListenTogether.state.value, autoplay) ->
-                loadAutoplaySongs(playFirst = true)
+            autoplay -> loadAutoplaySongs(playFirst = true)
         }
     }
 
     fun playPrevious() {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         val positionMs = playbackEngine.state.value.positionMs
 
         // After 10 seconds, Previous restarts the current song.
         if (positionMs > BACK_RESTARTS_AFTER_MS) {
             playbackEngine.seekTo(0L)
-            partySyncHolder[0]?.onLocalIntent()
             return
         }
 
@@ -1451,7 +1186,6 @@ fun OtoDesktopApp() {
      * the queue shows stays what plays.
      */
     fun setShuffle(enabled: Boolean) {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         shuffle = enabled
         persistence.saveBoolean("shuffle", enabled)
         liveQueue = if (enabled) {
@@ -1461,7 +1195,6 @@ fun OtoDesktopApp() {
             liveQueue.inOrderOf(preShuffleOrder).also { preShuffleOrder = emptyList() }
         }
         saveQueue()
-        partySyncHolder[0]?.onLocalIntent()
     }
 
     fun closePlaylistDialogs() {
@@ -1481,40 +1214,9 @@ fun OtoDesktopApp() {
         val seed = playlistTarget
         // A track from another source cannot go in an account playlist, so the playlist made to
         // hold it is one kept here.
-        if (!DesktopYouTubeAuth.isSignedIn || (seed != null && !DesktopSearchClient.isVideoId(seed.videoId))) {
-            playlists = playlists + DesktopPlaylist(title = name, songs = listOfNotNull(seed))
-            persistence.savePlaylists(playlists)
-            closePlaylistDialogs()
-            return
-        }
-        playlistBusy = true
-        playlistError = null
-        scope.launch {
-            DesktopSearchClient.createPlaylist(name, privacy, listOfNotNull(seed?.videoId))
-                .onSuccess { playlistId ->
-                    closePlaylistDialogs()
-                    editPlaylistShelf { items ->
-                        val card = ShelfItem(
-                            title = name,
-                            // Only what this request itself establishes: an unseeded playlist gets
-                            // a card of just its name rather than a guess at what the feed will
-                            // call it.
-                            subtitle = if (seed != null) "1 song" else "",
-                            thumbnailUrl = seed?.thumbnailUrl,
-                            videoId = null,
-                            browseId = "VL$playlistId",
-                        )
-                        // Leads the shelf because it is the newest, which is the order the feed
-                        // itself comes in.
-                        listOf(card) + items.filterNot { it.browseId == card.browseId }
-                    }
-                    libraryStale = true
-                }
-                .onFailure {
-                    playlistBusy = false
-                    playlistError = it.message ?: "Could not create the playlist"
-                }
-        }
+        playlists = playlists + DesktopPlaylist(title = name, songs = listOfNotNull(seed))
+        persistence.savePlaylists(playlists)
+        closePlaylistDialogs()
     }
 
     fun openPlaylist(playlist: DesktopPlaylist) {
@@ -1530,46 +1232,6 @@ fun OtoDesktopApp() {
         )
     }
 
-    /**
-     * Keeps an imported Spotify playlist where the phone does: on the account when signed in,
-     * otherwise on this computer, which is also the fallback if the account refuses it. Returns a
-     * note only for that fallback.
-     */
-    suspend fun importSpotifyPlaylist(title: String, songs: List<Song>): String? {
-        val signedIn = DesktopYouTubeAuth.isSignedIn
-        if (signedIn) {
-            val created = DesktopSearchClient.createPlaylist(title, PlaylistPrivacy.PRIVATE, songs.map(Song::videoId))
-            created.getOrNull()?.let { playlistId ->
-                editPlaylistShelf { items ->
-                    val card = ShelfItem(
-                        title = title,
-                        subtitle = "${songs.size} songs",
-                        thumbnailUrl = songs.firstOrNull()?.thumbnailUrl,
-                        videoId = null,
-                        browseId = "VL$playlistId",
-                    )
-                    listOf(card) + items.filterNot { it.browseId == card.browseId }
-                }
-                libraryStale = true
-                openCollection("VL$playlistId")
-                return null
-            }
-            DesktopTrackLog.log("spotify import: account playlist failed: ${created.exceptionOrNull()?.message}")
-        }
-        val playlist = DesktopPlaylist(title = title, songs = songs)
-        playlists = playlists + playlist
-        persistence.savePlaylists(playlists)
-        openPlaylist(playlist)
-        return if (signedIn) {
-            DesktopStrings.format(
-                "spotify_import_local_fallback",
-                title,
-                fallback = "Couldn't create it on YouTube Music, so '%1\$s' was saved on this device instead.",
-            )
-        } else {
-            null
-        }
-    }
 
     fun addToPlaylist(playlist: DesktopPlaylist) {
         val song = playlistTarget ?: return
@@ -1598,7 +1260,6 @@ fun OtoDesktopApp() {
     playbackEngine = remember {
         DesktopPlaybackEngine(
             onEnded = {
-                selectedSong?.let(DesktopScrobbling::onPlaybackEnded)
                 if (DesktopSleepTimer.afterTrack.value) {
                     DesktopSleepTimer.cancel()
                 } else if (repeatMode == DesktopRepeatMode.ONE) {
@@ -1624,129 +1285,14 @@ fun OtoDesktopApp() {
                     selectedSong = song
                     history = (listOf(song) + history.filterNot { it.videoId == song.videoId }).take(50)
                     persistence.saveHistory(history)
-                    DesktopScrobbling.updateNowPlaying(song)
-                    partySyncHolder[0]?.onLocalIntent()
                 }
             },
         )
     }
-    val partySync = remember(playbackEngine) {
-        DesktopPartySync(
-            scope = scope,
-            engine = playbackEngine,
-            playTrack = { shared, at ->
-                // The phone's PartySync.load: the party's running order, standing on its track —
-                // so the queue on screen moves with the song rather than keeping the old one as
-                // "now playing" and the new one as the first thing still to come.
-                val songs = DesktopQueue.adopt(liveQueue.songs, shared.map { it.toDesktopSong() })
-                liveQueue = DesktopQueue(songs, at.coerceIn(songs.indices)).trimmed()
-                liveQueue.current?.let { song ->
-                    selectedSong = song
-                    playbackEngine.load(song, playWhenReady = false)
-                }
-            },
-            localQueue = { liveQueue.songs to liveQueue.index },
-            applyPartyUpcoming = { upcoming ->
-                val aligned = liveQueue.withPartyUpcoming(upcoming.map { it.toDesktopSong() })
-                if (aligned !== liveQueue) liveQueue = aligned
-            },
-            applyPartyAutoplay = { _ ->
-                // The party setting overrides the personal preference only while connected. The
-                // phone deliberately does not persist it or delete queue rows on this device.
-                autoplayJob?.cancel()
-                autoplayJob = null
-                autoplaySeed = null
-            },
-            onEnteredParty = {
-                if (personalQueueStash == null) {
-                    personalQueueStash = liveQueue
-                    personalPositionStash = playbackEngine.state.value.positionMs
-                    personalPlayingStash = playbackEngine.state.value.isPlaying
-                }
-            },
-            onLeftParty = {
-                personalQueueStash?.let { stashed ->
-                    liveQueue = stashed
-                    selectedSong = stashed.current
-                    stashed.current?.let {
-                        playbackEngine.load(it, personalPlayingStash, personalPositionStash)
-                    }
-                    saveQueue()
-                }
-                personalQueueStash = null
-            },
-        )
-    }
-    DisposableEffect(partySync) {
-        partySyncHolder[0] = partySync
-        partySync.start()
-        onDispose {
-            partySync.stop()
-            if (partySyncHolder[0] === partySync) partySyncHolder[0] = null
-        }
-    }
-    fun togglePlayPauseFromUser() {
-        if (partySync.handleLockedPlayPause()) return
-        playbackEngine.togglePlayPause()
-        partySync.onLocalIntent()
-    }
-    fun playFromUser() {
-        if (DesktopListenTogether.state.value.controlsLocked) {
-            if (!playbackEngine.state.value.isPlaying) partySync.handleLockedPlayPause()
-            return
-        }
-        playbackEngine.play()
-        partySync.onLocalIntent()
-    }
-    fun pauseFromUser() {
-        if (DesktopListenTogether.state.value.controlsLocked) {
-            if (playbackEngine.state.value.isPlaying) partySync.handleLockedPlayPause()
-            return
-        }
-        playbackEngine.pause()
-        partySync.onLocalIntent()
-    }
-    val mprisController = remember(playbackEngine) {
-        DesktopMprisController(
-            onPlay = ::playFromUser,
-            onPause = ::pauseFromUser,
-            onPlayPause = ::togglePlayPauseFromUser,
-            onNext = ::playNext,
-            onPrevious = ::playPrevious,
-            onShuffleChanged = { enabled ->
-                shuffle = enabled
-                persistence.saveBoolean("shuffle", enabled)
-            },
-            onLoopStatusChanged = { status ->
-                repeatMode = when (status) {
-                    "Track" -> DesktopRepeatMode.ONE
-                    "Playlist" -> DesktopRepeatMode.ALL
-                    else -> DesktopRepeatMode.OFF
-                }
-                persistence.saveString("repeat_mode", repeatMode.name)
-            },
-            onRateChanged = { value ->
-                playbackSpeed = value.toFloat().coerceIn(0.25f, 3.0f)
-                persistence.saveString("playback_speed", playbackSpeed.toString())
-            },
-            onVolumeChanged = { value ->
-                volume = value.toFloat().coerceIn(0.0f, 1.0f)
-                persistence.saveString("volume", volume.toString())
-            },
-            onSeek = { positionMs ->
-                if (!DesktopListenTogether.state.value.controlsLocked) {
-                    playbackEngine.seekTo(positionMs)
-                    partySync.onLocalIntent()
-                }
-            },
-        )
-    }
-    DisposableEffect(mprisController) {
-        mprisController.start()
-        onDispose { mprisController.stop() }
-    }
-    // The Windows half of the same idea. Linux has MPRIS above; on Windows this
-    // is what the media keys and the volume flyout's card talk to.
+    fun togglePlayPauseFromUser() = playbackEngine.togglePlayPause()
+    fun playFromUser() = playbackEngine.play()
+    fun pauseFromUser() = playbackEngine.pause()
+    // What the media keys and the Windows volume flyout's card talk to.
     DisposableEffect(playbackEngine) {
         DesktopWindowsMedia.start(
             DesktopWindowsMedia.Controller(
@@ -1755,12 +1301,7 @@ fun OtoDesktopApp() {
                 onNext = ::playNext,
                 onPrevious = ::playPrevious,
                 onStop = ::pauseFromUser,
-                onSeek = { positionMs ->
-                    if (!DesktopListenTogether.state.value.controlsLocked) {
-                        playbackEngine.seekTo(positionMs)
-                        partySync.onLocalIntent()
-                    }
-                },
+                onSeek = { positionMs -> playbackEngine.seekTo(positionMs) },
             ),
         )
         onDispose { DesktopWindowsMedia.stop() }
@@ -1790,17 +1331,11 @@ fun OtoDesktopApp() {
         playbackEngine.setSkipSilence(skipSilence)
         playbackEngine.setOutputPrecision(outputPrecision)
     }
-    // Not while listening together, exactly as on the phone: a blend starts the next track early,
-    // by a length this computer decides from its own copy of the audio, so every member would begin
-    // the next song at a different moment and be dragged back by a correcting seek. The transition a
-    // party shares is the plain one. The settings themselves are left alone and come back after.
-    val inParty = partyState.inParty
-    LaunchedEffect(automix, automixOnSkip, automixPhraseBars, crossfadeSeconds, inParty, audioQuality, selectedSong?.videoId, queue, liveQueue.index, shuffle, repeatMode) {
-        playbackEngine.setAutomixEnabled(automix && !inParty)
-        playbackEngine.setAutomixPhraseBars(if (automix && !inParty) automixPhraseBars else 0)
-        playbackEngine.setCrossfadeSeconds(if (inParty) 0 else crossfadeSeconds)
-        // A party mixes only with the plain transition, so a skip there cuts like it always did.
-        playbackEngine.setSkipMixEnabled(automixOnSkip && !inParty)
+    LaunchedEffect(automix, automixOnSkip, automixPhraseBars, crossfadeSeconds, audioQuality, selectedSong?.videoId, queue, liveQueue.index, shuffle, repeatMode) {
+        playbackEngine.setAutomixEnabled(automix)
+        playbackEngine.setAutomixPhraseBars(if (automix) automixPhraseBars else 0)
+        playbackEngine.setCrossfadeSeconds(crossfadeSeconds)
+        playbackEngine.setSkipMixEnabled(automixOnSkip)
         // Exactly what Next would play, so a crossfade can never blend into anything else. Shuffle
         // is already the queue's order; picking "the first track that is not this one" under it
         // blended into a song from history whenever the current one was not at the top.
@@ -1816,26 +1351,10 @@ fun OtoDesktopApp() {
     LaunchedEffect(selectedSong?.videoId, autoplay, repeatMode) {
         loadAutoplaySongs()
     }
-    val partyAutoplaySupplier = DesktopAutoplay.supplierId(partyState)
-    LaunchedEffect(
-        partyState.code,
-        partyState.playback.autoplayEnabled,
-        partyAutoplaySupplier,
-    ) {
-        if (partyState.inParty &&
-            partyState.playback.autoplayEnabled &&
-            partyAutoplaySupplier == partyState.you?.memberId
-        ) {
-            autoplayJob?.cancel()
-            autoplayJob = null
-            autoplaySeed = null
-            loadAutoplaySongs()
-        }
-    }
-    LaunchedEffect(liveQueue.songs.size, liveQueue.index, partyState.queue.seq) {
+    LaunchedEffect(liveQueue.songs.size, liveQueue.index) {
         val currentId = selectedSong?.videoId
         val shouldRefresh = DesktopAutoplay.queueNeedsRefresh(
-            enabled = DesktopAutoplay.enabled(partyState, autoplay),
+            enabled = autoplay,
             repeatAll = repeatMode == DesktopRepeatMode.ALL,
             currentIndex = liveQueue.index,
             itemCount = liveQueue.songs.size,
@@ -1971,20 +1490,8 @@ fun OtoDesktopApp() {
         lyricsLoading = false
     }
 
-    // A manual ask from the song menu's lyrics drawer, for a track whose automatic
-    // lookup came up empty and whose real title or artist the listener knows
-    // better than the tag. It just sets the query and nudges the effect above,
-    // which owns the loading state and the result — so the drawer's provider
-    // list updates through the same path as the automatic lookup.
-    fun searchLyrics(title: String, artist: String) {
-        lyricsQuery = title to artist
-        lyricsSearchTick++
-    }
 
-    // The song menu's lyrics offset nudges the whole synced lyric against the clock. It is a
-    // per-track adjustment, so a new track starts back at zero; the desktop owns the reset so the
-    // phone's sheet, which carries the offset across tracks, is left alone.
-    val lyricsOffsetMs by DesktopPlayerSettings.lyricsOffsetMs.collectAsState()
+    // Any lyrics offset is per track, so a new track starts back at zero.
     LaunchedEffect(selectedSong?.videoId) {
         DesktopPlayerSettings.setLyricsOffsetMs(0)
     }
@@ -2001,36 +1508,8 @@ fun OtoDesktopApp() {
         canvas = withContext(Dispatchers.IO) { DesktopCanvasClient.lookup(current) }
     }
 
-    LaunchedEffect(
-        playback.song?.videoId,
-        playback.isPlaying,
-        playback.durationMs,
-        playback.volume,
-        playback.error,
-        shuffle,
-        repeatMode,
-        playbackSpeed,
-    ) {
-        mprisController.update(
-            playback = playback,
-            shuffle = shuffle,
-            loopStatus = when (repeatMode) {
-                DesktopRepeatMode.OFF -> "None"
-                DesktopRepeatMode.ALL -> "Playlist"
-                DesktopRepeatMode.ONE -> "Track"
-            },
-            rate = playbackSpeed.toDouble(),
-        )
-    }
     LaunchedEffect(playback.song?.videoId, playback.isPlaying, playback.durationMs) {
-        DesktopScrobbling.onPlaybackStateChanged(playback)
         DesktopWindowsMedia.publish(playback)
-    }
-    // Refetched on opening the page rather than cached for the session: the
-    // point of it is that something played elsewhere shows up here.
-    LaunchedEffect(destination, youtubeSignedIn, sessionRevision) {
-        if (destination != DesktopDestination.HISTORY || !youtubeSignedIn) return@LaunchedEffect
-        DesktopSearchClient.history().onSuccess { remoteHistory = it }
     }
     LaunchedEffect(selectedSong?.videoId, overlays.nowPlaying) {
         trackLinks = null
@@ -2040,27 +1519,6 @@ fun OtoDesktopApp() {
         if (!overlays.nowPlaying) return@LaunchedEffect
         if (current.artistId != null && current.albumId != null) return@LaunchedEffect
         trackLinks = DesktopSearchClient.trackLinks(current.videoId).getOrNull()
-    }
-    // Keyed on the same things, plus the rate: Discord counts the bar down on
-    // its own clock, so only a change to what it was told is worth another push.
-    LaunchedEffect(playback.song?.videoId, playback.isPlaying, playback.durationMs, playbackSpeed, playback.streamFormat) {
-        DesktopDiscordRpc.onPlaybackStateChanged(playback, playbackSpeed)
-    }
-    // The account's own history on YouTube Music, which is what the home feed is built out of.
-    DisposableEffect(playback.song?.videoId) {
-        val previous = playbackEngine.state.value.positionMs / 1_000
-        onDispose { DesktopPlaybackTracker.onTrackChanged(previous) }
-    }
-    LaunchedEffect(playback.song?.videoId, playback.isPlaying) {
-        val songId = playback.song?.videoId ?: return@LaunchedEffect
-        if (!playback.isPlaying) return@LaunchedEffect
-        DesktopPlaybackTracker.onPlaying(songId)
-        while (currentCoroutineContext().isActive) {
-            delay(HISTORY_SAMPLE_MS)
-            val snapshot = playbackEngine.state.value
-            if (snapshot.song?.videoId != songId) break
-            DesktopPlaybackTracker.onProgress(songId, snapshot.positionMs / 1_000)
-        }
     }
     LaunchedEffect(playback.song?.videoId, playback.isPlaying) {
         val songId = playback.song?.videoId ?: return@LaunchedEffect
@@ -2113,38 +1571,19 @@ fun OtoDesktopApp() {
      * Android opens the same `SongActionsSheet` from every one of them.
      */
     fun songActionsFor(song: Song) = DesktopSongActions(
-        signedIn = youtubeSignedIn,
-        disliked = song.videoId in dislikedIds,
         downloaded = downloads.any { it.videoId == song.videoId },
         downloadInProgress = song.videoId in downloadInProgress,
-        sleepTimerMinutes = sleepTimerMinutes,
-        sleepAfterTrack = sleepAfterTrack,
-        onToggleDislike = ::toggleDislike,
         onAddToPlaylist = { playlistTarget = it },
         onDownload = ::downloadSong,
         onRemoveDownload = ::removeDownload,
-        onStartRadio = ::startRadio,
         onPlayNext = ::playNext,
-        onAddToQueue = ::addToQueue,
         onOpenAlbum = ::openAlbum,
         onOpenArtist = { id -> openArtist(id, song.artist) },
-        onSleepTimer = { minutes ->
-            if (minutes == null) DesktopSleepTimer.cancel() else DesktopSleepTimer.start(minutes)
-        },
-        onSleepAfterTrack = { DesktopSleepTimer.startAfterTrack() },
-        onShare = ::shareSong,
     )
 
     /** The "…" a song row hangs off, built the same way on every page that offers one. */
     @Composable
-    fun songMenu(song: Song) = DesktopSongMenuAnchor(
-        song = song,
-        liked = song.videoId in likedIds,
-        actions = songActionsFor(song),
-        onToggleLike = { toggleLike(song) },
-        onRevertToOriginal = null,
-        onUpgradeQuality = null,
-    )
+    fun songMenu(song: Song) = DesktopSongMenuAnchor(song = song, actions = songActionsFor(song))
 
     /** Replay counts artists by name, so the page has to be found from the name alone. */
     fun openArtistByName(name: String) {
@@ -2366,8 +1805,8 @@ fun OtoDesktopApp() {
         overlays.settingsPage = DesktopSettingsPage.MAIN
     }
 
-    /** The Library's folder rows: the two folders this computer has, and Spotify once connected. */
-    val libraryLinks = remember(spotifyCanvasCookie.isNotBlank()) {
+    /** The Library's folder rows: the two folders this computer has. */
+    val libraryLinks = remember {
         listOfNotNull(
             LibraryLink(
                 item = ShelfItem(
@@ -2389,39 +1828,9 @@ fun OtoDesktopApp() {
                 ),
                 icon = Icons.Rounded.Folder,
             ),
-            // As on the phone, only while signed in to Spotify in Account & integrations.
-            LibraryLink(
-                item = ShelfItem(
-                    title = SPOTIFY_SHELF,
-                    subtitle = DesktopStrings["spotify_library_subtitle", "Your playlists and Liked Songs"],
-                    thumbnailUrl = null,
-                    videoId = null,
-                    browseId = SPOTIFY_LIBRARY_ID,
-                ),
-                icon = Icons.Rounded.Cloud,
-                logo = SharedRes.drawable.spotify_logo,
-            ).takeIf { spotifyCanvasCookie.isNotBlank() },
         )
     }
 
-    /** The Spotify account's playlists, as a Library grid; Liked Songs first, as on the phone. */
-    fun openSpotifyLibrary() {
-        libraryShowAll = HomeShelf(SPOTIFY_SHELF, emptyList())
-        spotifyLibraryStatus = "Loading your Spotify playlists…"
-        scope.launch {
-            runCatching { SpotifyLibrary.playlists() }
-                .onSuccess { found ->
-                    spotifyLibraryStatus = null
-                    if (libraryShowAll?.title == SPOTIFY_SHELF) {
-                        libraryShowAll = HomeShelf(SPOTIFY_SHELF, found.map { it.toShelfItem() })
-                    }
-                }
-                .onFailure {
-                    DesktopTrackLog.log("spotify: playlists failed: ${it.message}")
-                    spotifyLibraryStatus = "Could not load your Spotify playlists: ${it.message}"
-                }
-        }
-    }
 
     /**
      * The Library's "On device" shelf: the playlists kept on this computer rather than on the
@@ -2446,19 +1855,6 @@ fun OtoDesktopApp() {
         when {
             browseId == LOCAL_DOWNLOADS_ID -> selectDestination(DesktopDestination.DOWNLOADS)
             browseId == LOCAL_MUSIC_ID -> selectDestination(DesktopDestination.LOCAL_MUSIC)
-            browseId == SPOTIFY_LIBRARY_ID -> openSpotifyLibrary()
-            // Spotify's tracks fill in below, as they are read and matched.
-            browseId.startsWith(SPOTIFY_PAGE_PREFIX) -> showCollection(
-                DesktopCollection(
-                    browseId = browseId,
-                    title = item.title,
-                    subtitle = item.subtitle,
-                    thumbnailUrl = item.thumbnailUrl,
-                    type = BrowseType.PLAYLIST,
-                    songs = emptyList(),
-                    loading = true,
-                ),
-            )
             browseId.startsWith(LOCAL_PLAYLIST_PREFIX) ->
                 playlists.firstOrNull { it.id == browseId.removePrefix(LOCAL_PLAYLIST_PREFIX) }?.let(::openPlaylist)
             else -> openShelfItem(item)
@@ -2494,8 +1890,8 @@ fun OtoDesktopApp() {
             return
         }
         val generation = ++homeGeneration
-        val signedIn = DesktopYouTubeAuth.isSignedIn
-        homeIdentity = "$signedIn/${DesktopAccounts.activeAccountId()}"
+        val signedIn = false
+        homeIdentity = "local"
         homeState = UiState.Loading
         homeContinuation = null
         homeSeenTitles.clear()
@@ -2635,12 +2031,6 @@ fun OtoDesktopApp() {
         loadHome()
     }
 
-    // The feed is the account's: signing in, out or across to another channel is a different Home,
-    // and Recently Played only exists with an account behind it.
-    LaunchedEffect(youtubeSignedIn, activeAccountId) {
-        val identity = "${DesktopYouTubeAuth.isSignedIn}/${DesktopAccounts.activeAccountId()}"
-        if (homeIdentity != null && identity != homeIdentity) loadHome()
-    }
 
     // The mark on a downloaded row, for the shared pages.
     LaunchedEffect(downloads) {
@@ -2863,56 +2253,9 @@ fun OtoDesktopApp() {
         }
     }
 
-    /**
-     * The account's library, re-read whenever the session behind it changes — signing in, switching
-     * channel, signing out.
-     */
-    LaunchedEffect(activeAccountId, activeProfileId, sessionRevision) {
-        youtubeSignedIn = DesktopYouTubeAuth.isSignedIn
-        if (!DesktopYouTubeAuth.isSignedIn) {
-            libraryState = UiState.Success(LibraryPage(emptyList(), emptyList(), emptyList()))
-            return@LaunchedEffect
-        }
-        libraryState = UiState.Loading
-        DesktopSearchClient.library().fold(
-            onSuccess = { page ->
-                // The continuation is a job to run, not page state — it is consumed below.
-                libraryState = UiState.Success(page.copy(likedContinuation = null))
-                DesktopTrackLog.log(
-                    "library: ${page.likedSongs.size} liked, ${page.librarySongs.size} added, " +
-                        "shelves ${page.shelves.joinToString { "${it.title}=${it.items.size}" }}",
-                )
-                val fromAccount = page.likedSongs.mapTo(HashSet(), Song::videoId)
-                if (!likedIds.containsAll(fromAccount)) {
-                    likedIds = likedIds + fromAccount
-                    // Off the drawing thread: an account with a long Liked Music writes a few tens
-                    // of kilobytes through the preference store, and that is a disk flush.
-                    withContext(Dispatchers.IO) { persistence.saveLikedIds(likedIds) }
-                }
-                // Liked Music is published to the tab a page budget deep; the rest is followed here
-                // for its ids alone, so a liked track past the budget still reads as liked.
-                // Tied to the account it was fetched for: the liked set is one shared map, and a
-                // sync still running after a switch would seed it with a stranger's likes.
-                val syncingFor = activeAccountId
-                page.likedContinuation?.let { token ->
-                    likedSyncJob?.cancel()
-                    likedSyncJob = scope.launch {
-                        val extra = HashSet<String>()
-                        DesktopSearchClient.syncLikedIds(token, onIds = { ids -> extra += ids })
-                        if (syncingFor != DesktopAccounts.activeAccountId()) return@launch
-                        if (!likedIds.containsAll(extra)) {
-                            likedIds = likedIds + extra
-                            withContext(Dispatchers.IO) { persistence.saveLikedIds(likedIds) }
-                            DesktopTrackLog.log("library: liked sync added ${extra.size} ids past the first pages")
-                        }
-                    }
-                }
-            },
-            onFailure = { libraryState = UiState.Error(it.message ?: "Could not load your library") },
-        )
-        // A session refused mid-flight is dropped by the request itself, so the answer to "are we
-        // signed in" is only settled once the call is over.
-        youtubeSignedIn = DesktopYouTubeAuth.isSignedIn
+    // No account: the Library is what is kept on this computer.
+    LaunchedEffect(sessionRevision) {
+        libraryState = UiState.Success(LibraryPage(emptyList(), emptyList(), emptyList()))
     }
 
     fun here() = DesktopNavEntry(
@@ -3009,20 +2352,13 @@ fun OtoDesktopApp() {
 
     /** The song menu's verbs for [song], as the player sheet offers them. */
     fun playerSongActions(song: Song) = DesktopSongActions(
-        signedIn = youtubeSignedIn,
-        disliked = song.videoId in dislikedIds,
         downloaded = downloads.any { it.videoId == song.videoId },
         downloadInProgress = song.videoId in downloadInProgress,
-        sleepTimerMinutes = sleepTimerMinutes,
-        sleepAfterTrack = sleepAfterTrack,
-        onToggleDislike = ::toggleDislike,
         onAddToPlaylist = { playlistTarget = it },
         onDownload = ::downloadSong,
         onRemoveDownload = ::removeDownload,
-        onStartRadio = ::startRadio,
         onPlayNext = ::playNext,
-        onAddToQueue = ::addToQueue,
-        // Both leave the player, the way opening a page from Android's sheet collapses it.
+        // Both leave the player.
         onOpenAlbum = { id ->
             overlays.nowPlaying = false
             openAlbum(id)
@@ -3031,11 +2367,6 @@ fun OtoDesktopApp() {
             overlays.nowPlaying = false
             openArtist(id, song.artist)
         },
-        onSleepTimer = { minutes ->
-            if (minutes == null) DesktopSleepTimer.cancel() else DesktopSleepTimer.start(minutes)
-        },
-        onSleepAfterTrack = { DesktopSleepTimer.startAfterTrack() },
-        onShare = ::shareSong,
     )
 
     // What the shared player reads as settings, kept in step with the window's own.
@@ -3100,71 +2431,38 @@ fun OtoDesktopApp() {
             }
     }
 
-    // Every provider the song menu's lyrics drawer lists — all of them, in the
-    // saved order, not just the enabled ones — each carrying what its last race
-    // turned up so the row can read "Found", "Not found" or "Searching…". The
-    // winner is the one the sheet shows now.
-    val menuLyricsProviders = remember(
-        lyricsOrder,
-        lyricsOn,
-        lyricsOnly,
-        lyricsLoading,
-        lyrics?.source,
-        lyricsProviderResults.value,
-    ) {
-        val currentLabel = lyrics?.source
-        val asked = lyricsOnly?.let { listOf(it) } ?: DesktopLyricsClient.enabledSources(lyricsOrder, lyricsOn)
-        lyricsOrder.map { label ->
-            val source = lyricsSourceNamed(label)
-            val state = when {
-                label == currentLabel -> LyricsProviderState.FOUND
-                source != null && lyricsProviderResults.value[source] != null -> lyricsProviderResults.value.getValue(source)
-                lyricsLoading && label in asked -> LyricsProviderState.FETCHING
-                else -> LyricsProviderState.NOT_FETCHED
-            }
-            DesktopLyricsProviderRow(label, state, label == currentLabel)
-        }
-    }
 
     // The queue's edits, for the player's queue and the queue column alike.
     fun removeFromQueue(at: Int) {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         val edited = liveQueue.removeAt(at)
         if (edited !== liveQueue) {
             liveQueue = edited
             saveQueue()
-            partySyncHolder[0]?.onLocalIntent()
         }
     }
 
     fun moveInQueue(from: Int, to: Int) {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         val edited = liveQueue.move(from, to)
         if (edited !== liveQueue) {
             liveQueue = edited
             saveQueue()
-            partySyncHolder[0]?.onLocalIntent()
         }
     }
 
     // Clears what the listener queued by hand, as the phone's Clear does; the album and AutoPlay
     // stay where they are.
     fun clearQueue() {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         val edited = liveQueue.withoutUserQueue()
         if (edited === liveQueue) return
         liveQueue = edited
         saveQueue()
-        partySyncHolder[0]?.onLocalIntent()
     }
 
     fun seekPlayer(target: Long) {
-        if (DesktopListenTogether.state.value.controlsLocked) return
         val duration = playback.durationMs
         playbackEngine.seekTo(
             if (duration > 0) target.coerceIn(0L, duration) else target.coerceAtLeast(0L),
         )
-        partySyncHolder[0]?.onLocalIntent()
     }
 
     MaterialTheme(
@@ -3213,22 +2511,6 @@ fun OtoDesktopApp() {
                             goBack()
                             true
                         }
-                        DesktopPlatform.isMac && event.isMetaPressed && event.key == Key.Comma -> {
-                            openSettings()
-                            true
-                        }
-                        DesktopPlatform.isMac && event.isMetaPressed && event.key == Key.F -> {
-                            searchFocusRequested = true
-                            true
-                        }
-                        DesktopPlatform.isMac && event.isMetaPressed && event.key == Key.W -> {
-                            windowActions?.close?.invoke()
-                            true
-                        }
-                        DesktopPlatform.isMac && event.isMetaPressed && event.key == Key.M -> {
-                            windowActions?.minimize?.invoke()
-                            true
-                        }
                         // One layer at a time, innermost first: the player's own side panel, then
                         // the player.
                         event.key == Key.Escape -> when {
@@ -3245,8 +2527,7 @@ fun OtoDesktopApp() {
                             }
                             // A page of Settings steps back the way the back button does, unless
                             // one of its prompts is up over it.
-                            overlays.settingsPage != null &&
-                                !overlays.lastfmLogin && !overlays.listenBrainzToken && !overlays.discordToken -> {
+                            overlays.settingsPage != null -> {
                                 goBack()
                                 true
                             }
@@ -3289,10 +2570,6 @@ fun OtoDesktopApp() {
                         onOpenLyrics = { overlays.toggleSidePanel(DesktopSidePanel.LYRICS) },
                         onOpenQueue = { overlays.toggleSidePanel(DesktopSidePanel.QUEUE) },
                         sidePanel = overlays.sidePanel,
-                        accountAvatar = activeAccount?.profiles?.firstOrNull { it.profileId == activeProfileId }?.avatar?.takeIf { it.isNotBlank() }
-                            ?: activeAccount?.avatar?.takeIf { it.isNotBlank() }
-                            ?: activeAccount?.profiles?.firstOrNull()?.avatar?.takeIf { it.isNotBlank() },
-                        onOpenAccounts = { DesktopTrackLog.log("accounts: opening the switcher"); overlays.accounts = true },
                         canGoBack = navHistory.isNotEmpty(),
                         onBack = ::goBack,
                     )
@@ -3355,7 +2632,7 @@ fun OtoDesktopApp() {
                             DesktopSidePanel.QUEUE -> QueueSidePanel(
                                 queue = liveQueue.songs,
                                 queueIndex = liveQueue.index,
-                                autoplayEnabled = DesktopAutoplay.enabled(partyState, autoplay),
+                                autoplayEnabled = autoplay,
                                 onJumpTo = ::playQueueIndex,
                                 onRemove = ::removeFromQueue,
                                 onMove = ::moveInQueue,
@@ -3406,10 +2683,8 @@ fun OtoDesktopApp() {
                                 DesktopRepeatMode.ALL -> RepeatModes.ALL
                             },
                             shuffleEnabled = shuffle,
-                            autoplayEnabled = DesktopAutoplay.enabled(partyState, autoplay),
+                            autoplayEnabled = autoplay,
                             signedIn = youtubeSignedIn,
-                            accountName = activeAccount?.profiles?.firstOrNull { it.profileId == activeProfileId }?.name?.takeIf(String::isNotBlank)
-                                ?: activeAccount?.name?.takeIf(String::isNotBlank),
                             likeStatus = when (current.videoId) {
                                 in likedIds -> LikeStatus.LIKE
                                 in dislikedIds -> LikeStatus.DISLIKE
@@ -3419,9 +2694,6 @@ fun OtoDesktopApp() {
                             onPlayPause = ::togglePlayPauseFromUser,
                             onNext = ::playNext,
                             onPrevious = ::playPrevious,
-                            onBlockedControl = {
-                                DesktopPlayerHost.showMessage("Only the party host can change playback")
-                            },
                             onSeek = ::seekPlayer,
                             onSeekFraction = { fraction ->
                                 val duration = playbackEngine.state.value.durationMs
@@ -3438,7 +2710,7 @@ fun OtoDesktopApp() {
                                 persistence.saveString("repeat_mode", repeatMode.name)
                             },
                             onToggleAutoplay = {
-                                setAutoplay(!DesktopAutoplay.enabled(DesktopListenTogether.state.value, autoplay))
+                                setAutoplay(!autoplay)
                             },
                             onJumpTo = ::playQueueIndex,
                             onRemoveFromQueue = ::removeFromQueue,
@@ -3472,10 +2744,6 @@ fun OtoDesktopApp() {
                                 if (playerSong.playbackSourceType == PlaybackSourceType.BROWSE && id != null) {
                                     openAlbum(id)
                                 }
-                            },
-                            onListenTogether = {
-                                overlays.nowPlaying = false
-                                overlays.listenTogether = true
                             },
                             lyrics = sharedLyrics,
                             lyricsSource = sharedLyricsSource,
@@ -3525,46 +2793,11 @@ fun OtoDesktopApp() {
                             ) {
                                 DesktopSongMenuFor(
                                     song = playerSong,
-                                    liked = current.videoId in likedIds,
                                     actions = playerSongActions(current),
-                                    onToggleLike = { toggleLike(current) },
                                     onConvertVersion = { convertCurrentVersion(current) }.takeIf {
                                         current.localUri == null && DesktopSearchClient.isVideoId(current.videoId)
                                     },
                                     converting = versionSwitching,
-                                    onRevertToOriginal = {
-                                        DesktopOriginalVersion.pin(current.videoId)
-                                        playbackEngine.reloadCurrent()
-                                    }.takeIf {
-                                        playback.streamSourceId != null &&
-                                            playback.streamSourceId != "youtube" &&
-                                            DesktopMusicSources.hasYouTubeOriginal(current) &&
-                                            !DesktopOriginalVersion.isPinned(current.videoId)
-                                    },
-                                    onUpgradeQuality = {
-                                        DesktopOriginalVersion.clear(current.videoId)
-                                        playbackEngine.reloadCurrent(forceSourceRefresh = true)
-                                    }.takeIf { DesktopOriginalVersion.isPinned(current.videoId) },
-                                    onMore = {
-                                        playerMenuOpen = false
-                                        playerOverflowOpen.value = true
-                                    },
-                                    onSwitchLyricsQueue = {
-                                        playerMenuOpen = false
-                                        playerQueueToggle.value = true
-                                    },
-                                    queueShowing = playerQueueShowing.value,
-                                    onTranslate = {
-                                        playerMenuOpen = false
-                                        playerTranslateToggle.value = true
-                                    },
-                                    showingTranslation = playerShowingTranslation.value,
-                                    translateEnabled = !sharedLyrics.isNullOrEmpty(),
-                                    lyricsProviders = menuLyricsProviders,
-                                    onSelectLyricsProvider = { label -> lyricsOnly = label },
-                                    onSearchLyrics = { title, artist -> searchLyrics(title, artist) },
-                                    lyricsOffsetMs = lyricsOffsetMs,
-                                    onSetLyricsOffset = { DesktopPlayerSettings.setLyricsOffsetMs(it) },
                                     onDismiss = { playerMenuOpen = false },
                                 )
                             }
@@ -3590,101 +2823,13 @@ fun OtoDesktopApp() {
                             )
                         }
                     }
-                    if (overlays.accounts) {
-                        DesktopAccountSelector(
-                            accounts = accounts,
-                            activeAccountId = activeAccountId,
-                            activeProfileId = activeProfileId,
-                            busy = signInBusy != null,
-                            onSelect = { account, profile ->
-                                DesktopAccounts.select(account.accountId, profile.profileId)
-                                activeAccountId = account.accountId
-                                activeProfileId = profile.profileId
-                            },
-                            onAddAccount = { overlays.accounts = false; overlays.signIn = true },
-                            onRemoveAccount = { account ->
-                                scope.launch {
-                                    accounts = withContext(Dispatchers.IO) {
-                                        DesktopAccounts.remove(account.accountId)
-                                        DesktopAccounts.accounts()
-                                    }
-                                    activeAccountId = DesktopAccounts.activeAccountId()
-                                    activeProfileId = DesktopAccounts.activeProfileId()
-                                }
-                            },
-                            onOpenSettings = { overlays.accounts = false; openSettings() },
-                            onDismiss = { overlays.accounts = false },
-                        )
-                    }
-
-                    if (spotifyImportOpen) {
-                        DesktopSpotifyImportDialog(
-                            signedIn = youtubeSignedIn,
-                            onImported = ::importSpotifyPlaylist,
-                            onDismiss = { spotifyImportOpen = false },
-                        )
-                    }
-
-                    if (overlays.signIn) {
-                        DesktopSignInDialog(
-                            busy = signInBusy,
-                            error = signInError,
-                            webSignIn = DesktopWebSignIn.available,
-                            onWebSignIn = {
-                                webSignInJob?.cancel()
-                                webSignInJob = scope.launch {
-                                    signInError = null
-                                    signInBusy = WEB_SIGN_IN
-                                    try {
-                                        val cookie = DesktopWebSignIn.captureYouTube()
-                                        signIn(cookie, WEB_SIGN_IN)
-                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                        throw cancelled
-                                    } catch (failure: Exception) {
-                                        DesktopTrackLog.log("sign-in: YouTube Music failed: ${failure.message}")
-                                        signInError = failure.message ?: "Could not complete the sign-in."
-                                    } finally {
-                                        signInBusy = null
-                                        webSignInJob = null
-                                    }
-                                }
-                            },
-                            onImport = { profile ->
-                                scope.launch {
-                                    when (val found = withContext(Dispatchers.IO) { DesktopBrowserCookies.read(profile) }) {
-                                        is DesktopBrowserCookies.Result.Session ->
-                            signIn(found.cookie, profile.label, profile.database.toString())
-                                        DesktopBrowserCookies.Result.SignedOut ->
-                                            signInError = "${profile.label} is not signed in."
-                                        is DesktopBrowserCookies.Result.Unavailable ->
-                                            signInError = "${profile.label}: ${found.reason}."
-                                    }
-                                }
-                            },
-                            onPaste = { pasted ->
-                                scope.launch {
-                                    if (!DesktopBrowserCookies.hasSigningSecret(pasted)) {
-                                        signInError = "That cookie has no signing secret in it — copy the whole header."
-                                    } else {
-                                        signIn(pasted, "the cookie you pasted")
-                                    }
-                                }
-                            },
-                            onDismiss = {
-                                webSignInJob?.cancel()
-                                overlays.signIn = false
-                                signInError = null
-                            },
-                        )
-                    }
                     if (overlays.playlistDialog || playlistTarget != null) {
                         DesktopPlaylistDialog(
                             song = playlistTarget,
-                            accountPlaylists = accountPlaylists,
+                            accountPlaylists = emptyList(),
                             localPlaylists = playlists,
-                            signedIn = youtubeSignedIn,
-                            canUseAccount = playlistTarget
-                                ?.let { DesktopSearchClient.isVideoId(it.videoId) } ?: true,
+                            signedIn = false,
+                            canUseAccount = false,
                             busy = playlistBusy,
                             error = playlistError,
                             onPickAccount = ::addToAccountPlaylist,
@@ -3722,11 +2867,7 @@ fun OtoDesktopApp() {
                             songContextMenu = { song, onDismiss ->
                                 DesktopSongMenuFor(
                                     song = song,
-                                    liked = song.videoId in likedIds,
                                     actions = songActionsFor(song),
-                                    onToggleLike = { toggleLike(song) },
-                                    onRevertToOriginal = null,
-                                    onUpgradeQuality = null,
                                     onDismiss = onDismiss,
                                 )
                             },
@@ -3734,21 +2875,6 @@ fun OtoDesktopApp() {
                     }
                     if (overlays.downloadManager) {
                         DesktopDownloadManagerDialog(onDismiss = { overlays.downloadManager = false })
-                    }
-                    if (overlays.lastfmLogin) {
-                        DesktopLastfmLoginDialog(onDismiss = { overlays.lastfmLogin = false })
-                    }
-                    if (overlays.listenBrainzToken) {
-                        DesktopListenBrainzTokenDialog(onDismiss = { overlays.listenBrainzToken = false })
-                    }
-                    if (overlays.discordToken) {
-                        DesktopDiscordTokenDialog(onDismiss = { overlays.discordToken = false })
-                    }
-                    if (overlays.listenTogether) {
-                        DesktopListenTogetherDialog(
-                            autoplayEnabled = autoplay,
-                            onDismiss = { overlays.listenTogether = false },
-                        )
                     }
                     if (overlays.audioOutput) {
                         DesktopAudioOutputDialog(onDismiss = { overlays.audioOutput = false })
@@ -3776,11 +2902,7 @@ fun OtoDesktopApp() {
                     menu = { song, onDismiss ->
                         DesktopSongMenuFor(
                             song = song,
-                            liked = song.videoId in likedIds,
                             actions = songActionsFor(song),
-                            onToggleLike = { toggleLike(song) },
-                            onRevertToOriginal = null,
-                            onUpgradeQuality = null,
                             onDismiss = onDismiss,
                         )
                     },
@@ -3857,8 +2979,6 @@ fun OtoDesktopApp() {
                                         animatedCanvas = it
                                         persistence.saveBoolean("animated_canvas", it)
                                     },
-                                    spotifyCanvasReady = spotifyCanvasCookie.isNotBlank(),
-                                    onOpenSpotifyCanvasSetup = { overlays.settingsPage = DesktopSettingsPage.SPOTIFY_CANVAS },
                                     dontRepeatSuggestions = dontRepeatSuggestions,
                                     onDontRepeatSuggestionsChange = {
                                         dontRepeatSuggestions = it
@@ -3894,7 +3014,6 @@ fun OtoDesktopApp() {
                                     onOpenTranslationLanguage = { overlays.settingsPage = DesktopSettingsPage.TRANSLATION_LANGUAGE },
                                     onOpenEqualizer = { overlays.settingsPage = DesktopSettingsPage.EQUALIZER },
                                     onOpenAudioOutput = { overlays.settingsPage = DesktopSettingsPage.AUDIO_OUTPUT },
-                                    onOpenListenTogether = { overlays.settingsPage = DesktopSettingsPage.LISTEN_TOGETHER },
                                     onShowNerdStatsChange = {
                                         showNerdStats = it
                                         persistence.saveBoolean("show_nerd_stats", it)
@@ -4013,15 +3132,10 @@ fun OtoDesktopApp() {
                                             )
                                         }
                                     },
-                                    onOpenIntegrations = { overlays.settingsPage = DesktopSettingsPage.INTEGRATIONS },
                                     onOpenLicenses = { overlays.settingsPage = DesktopSettingsPage.LICENSES },
                                 )
                                 DesktopSettingsPage.EQUALIZER -> DesktopEqualizerDialog(onDismiss = ::goBack)
                                 DesktopSettingsPage.AUDIO_OUTPUT -> DesktopAudioOutputDialog(onDismiss = ::goBack)
-                                DesktopSettingsPage.LISTEN_TOGETHER -> DesktopListenTogetherDialog(
-                                    autoplayEnabled = autoplay,
-                                    onDismiss = ::goBack,
-                                )
                                 DesktopSettingsPage.LYRICS_SOURCES -> DesktopLyricsSourcesDialog(
                                     order = lyricsOrder,
                                     enabled = lyricsOn,
@@ -4049,29 +3163,6 @@ fun OtoDesktopApp() {
                                     onDismiss = ::goBack,
                                 )
                                 DesktopSettingsPage.TRANSLATION_LANGUAGE -> DesktopTranslationLanguageDialog(onDismiss = ::goBack)
-                                DesktopSettingsPage.SPOTIFY_CANVAS -> DesktopSpotifyCanvasDialog(
-                                    onDismiss = ::goBack,
-                                    onSaved = { spotifyCanvasCookie = it },
-                                )
-                                DesktopSettingsPage.INTEGRATIONS -> DesktopIntegrationsDialog(
-                                    song = playback.song,
-                                    spotify = DesktopSpotifyConnection(
-                                        connected = spotifyCanvasCookie.isNotBlank(),
-                                        canSignIn = DesktopWebSignIn.available,
-                                        signingIn = spotifySignInJob != null,
-                                        error = spotifySignInError,
-                                        onSignIn = ::signInToSpotify,
-                                        onPasteCookie = { overlays.settingsPage = DesktopSettingsPage.SPOTIFY_CANVAS },
-                                        onDisconnect = {
-                                            DesktopSpotifyToken.setCookie("")
-                                            spotifyCanvasCookie = ""
-                                        },
-                                    ),
-                                    onOpenLastfm = { overlays.lastfmLogin = true },
-                                    onOpenListenBrainz = { overlays.listenBrainzToken = true },
-                                    onOpenDiscordToken = { overlays.discordToken = true },
-                                    onDismiss = ::goBack,
-                                )
                                 DesktopSettingsPage.LICENSES -> DesktopLicensesPage(onDismiss = ::goBack)
                             }
                             }
@@ -4285,14 +3376,6 @@ fun OtoDesktopApp() {
                                 Modifier.fillMaxWidth().padding(top = 8.dp, end = 12.dp),
                                 horizontalArrangement = Arrangement.End,
                             ) { DesktopLibrarySortMenu() }
-                            spotifyLibraryStatus?.takeIf { libraryShowAll?.title == SPOTIFY_SHELF }?.let { status ->
-                                Text(
-                                    status,
-                                    color = DesktopSecondary,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 12.dp),
-                                )
-                            }
                             LibraryGridPage(
                                 shelf = libraryShowAll!!,
                                 gridState = libraryGridState,
@@ -4338,7 +3421,7 @@ fun OtoDesktopApp() {
                                     }
                                 }
                             },
-                            onSignIn = { overlays.accounts = true },
+                            onSignIn = {},
                             onRetry = ::reloadLibrary,
                             refreshing = false,
                             onRefresh = ::reloadLibrary,
@@ -4351,7 +3434,7 @@ fun OtoDesktopApp() {
                         destination == DesktopDestination.HISTORY -> DesktopHistoryPage(
                             // The account's history when there is one, and what
                             // this computer played when there is not.
-                            history = remoteHistory.ifEmpty { history },
+                            history = history,
                             onSongClick = { playSong(it, source = DesktopQueueSource(DesktopStrings["history", "History"], PlaybackSourceType.HISTORY)) },
                             onDownload = ::downloadSong,
                             onAddToPlaylist = { playlistTarget = it },
@@ -4420,14 +3503,11 @@ private fun DesktopTopBar(
     onOpenQueue: () -> Unit,
     /** Which of the two the column beside the page is showing, lit on its button. */
     sidePanel: DesktopSidePanel?,
-    accountAvatar: String?,
-    onOpenAccounts: () -> Unit,
     /** The app's one way back — every page's own arrow was folded into this. */
     canGoBack: Boolean,
     onBack: () -> Unit,
 ) {
-    val titleBarEnabled by DesktopTitleBarSetting.enabled.collectAsState()
-    val inlineCaption = DesktopPlatform.drawsOwnWindowFrame && !titleBarEnabled
+    val inlineCaption = true
     // The same claim the player's scrubber runs through an Automix blend, but breathing slowly and
     // gently rather than strobing on the beat — the desktop's calm reading of a mix.
     val mixBlend = DesktopPlayerSettings.smartMixBlend.collectAsState()
@@ -4735,8 +3815,7 @@ private fun DesktopSidebar(
         }
     }
 
-    val titleBarEnabled by DesktopTitleBarSetting.enabled.collectAsState()
-    val inlineCaption = DesktopPlatform.drawsOwnWindowFrame && !titleBarEnabled
+    val inlineCaption = true
     // Rows the listener has tucked away; keyed the same way the sidebar lists them.
     val hiddenSidebar by DesktopSidebarVisibility.hidden.collectAsState()
     Box(
@@ -5203,7 +4282,6 @@ private fun DesktopFrame(
             Column(Modifier.fillMaxSize()) {
                 // Above everything, and outside the box the rest of the window is drawn in, because
                 // that is what a title bar is.
-                DesktopTitleBar()
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     BoxWithConstraints(Modifier.fillMaxSize()) {
                         val compact = maxWidth < 980.dp
@@ -5857,7 +4935,6 @@ private enum class DesktopSettingsSection {
     LOCAL_MUSIC,
     STORAGE,
     MISCELLANEOUS,
-    ACCOUNT,
     ADVANCED,
 }
 
@@ -5892,8 +4969,6 @@ private fun DesktopSettingsScreen(
     onCrossfadeSecondsChange: (Int) -> Unit,
     animatedCanvas: Boolean,
     onAnimatedCanvasChange: (Boolean) -> Unit,
-    spotifyCanvasReady: Boolean,
-    onOpenSpotifyCanvasSetup: () -> Unit,
     dontRepeatSuggestions: Boolean,
     onDontRepeatSuggestionsChange: (Boolean) -> Unit,
     filterNonMusicAudio: Boolean,
@@ -5911,8 +4986,6 @@ private fun DesktopSettingsScreen(
     onOpenEqualizer: () -> Unit,
     /** Opens the output-device picker. */
     onOpenAudioOutput: () -> Unit,
-    /** Opens the listening-together party. */
-    onOpenListenTogether: () -> Unit,
     showNerdStats: Boolean,
     onShowNerdStatsChange: (Boolean) -> Unit,
     fullBleedArtwork: Boolean,
@@ -5947,7 +5020,6 @@ private fun DesktopSettingsScreen(
     onRemoveSource: (DesktopSourceConfig) -> Unit,
     onMoveSource: (DesktopSourceConfig, Int) -> Unit,
     onTestSource: (DesktopSourceConfig) -> Unit,
-    onOpenIntegrations: () -> Unit,
     onOpenLicenses: () -> Unit,
 ) {
     var editingSource by remember { mutableStateOf<DesktopSourceConfig?>(null) }
@@ -6528,19 +5600,6 @@ private fun DesktopSettingsScreen(
                             kind = DesktopSourceKind.ADDON,
                         )
                     }
-                }
-            }
-            if (section == DesktopSettingsSection.ACCOUNT) item {
-                // One row rather than the four groups this used to be. Every
-                // integration option Android has lives behind it; inline, the
-                // list was longer than the rest of Settings put together.
-                SettingsGroup("Integrations") {
-                    SettingsRow(
-                        Icons.Rounded.Share,
-                        "Discord",
-                        "Show what you're playing on your Discord profile",
-                        onOpenIntegrations,
-                    )
                 }
             }
             if (section == DesktopSettingsSection.ADVANCED) item {
@@ -7161,34 +6220,26 @@ private fun DesktopCollectionSongRow(
     /** Takes this row out of the playlist being read. */
     onRemove: ((Song) -> Unit)? = null,
 ) {
-    // A Spotify track still being matched to YouTube Music, or with no match: listed, but there is
-    // nothing yet to play, like, save or remove.
-    val unresolved = song.isUnresolvedSpotify
     val openContextMenu = LocalDesktopContextMenu.current
     Row(
         Modifier
             .fillMaxWidth()
-            .alpha(if (song.isMatchMissing) 0.45f else 1f)
-            .contextClick(if (unresolved) null else ({ openContextMenu(song) }))
+            .contextClick { openContextMenu(song) }
             .clip(RoundedCornerShape(6.dp))
             .background(if (striped) Color.White.copy(alpha = 0.04f) else Color.Transparent)
             .desktopHoverFill(corner = 6.dp)
-            .clickable(enabled = !unresolved) { onClick(song) }
+            .clickable { onClick(song) }
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val nowPlaying = isCurrent ?: song.isNowPlaying()
         Box(Modifier.width(28.dp), contentAlignment = Alignment.Center) {
-            if (song.isMatchPending) {
-                CircularProgressIndicator(color = DesktopSecondary, strokeWidth = 1.5.dp, modifier = Modifier.size(12.dp))
-            } else {
-                Text(
-                    number.toString(),
-                    color = DesktopSecondary,
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.labelSmall,
-                )
-            }
+            Text(
+                number.toString(),
+                color = DesktopSecondary,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.labelSmall,
+            )
         }
         Spacer(Modifier.width(12.dp))
         // No sleeve on an album's rows.
@@ -7232,7 +6283,6 @@ private fun DesktopCollectionSongRow(
             Modifier.width(collectionActionsWidth(onRemove != null)),
             horizontalArrangement = Arrangement.End,
         ) {
-            if (unresolved) return@Row
             onRemove?.let { remove ->
                 IconButton(onClick = { remove(song) }, modifier = Modifier.size(34.dp)) {
                     Icon(

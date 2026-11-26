@@ -127,7 +127,6 @@ object DesktopCanvasClient {
                 { DesktopAppleMusicCanvas.search(title, artist, album) },
                 { DesktopTidalCanvas.search(title, artist, album) },
                 { DesktopCommunityCanvas.search(title, artist, album) },
-                { DesktopSpotifyCanvas.search(title, artist, album) },
             ) { it.matches(title, artist, album) }
         }
     }
@@ -151,7 +150,6 @@ object DesktopCanvasClient {
                 { DesktopAppleMusicCanvas.searchAlbum(name, credit) },
                 { DesktopTidalCanvas.searchAlbum(name, credit) },
                 { DesktopCommunityCanvas.searchAlbum(name, credit) },
-                { DesktopSpotifyCanvas.searchAlbum(name, credit) },
             ) { it.matches(name, credit, name) }
         }
     }
