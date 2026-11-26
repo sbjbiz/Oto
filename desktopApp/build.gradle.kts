@@ -4,7 +4,7 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 /** What the packages, the launcher and the settings footer all say. */
-val appVersion: String = providers.gradleProperty("bitchord.version").orNull
+val appVersion: String = providers.gradleProperty("oto.version").orNull
     ?.removePrefix("v")
     ?.takeIf { it.isNotBlank() }
     ?: "1.0"
@@ -405,7 +405,7 @@ val slimLibs by tasks.registering(Sync::class) {
     into(slimDir)
 }
 
-val composeMainClass = "com.music.bitchord.desktop.MainKt"
+val composeMainClass = "app.oto.desktop.MainKt"
 
 compose.desktop {
     application {
@@ -421,9 +421,9 @@ compose.desktop {
         dependsOn("jar", "slimLibs")
         jvmArgs("-Xmx512m")
         jvmArgs("-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=20000", "-XX:G1PeriodicGCSystemLoadThreshold=0")
-        jvmArgs("-Dbitchord.version=$appVersion")
+        jvmArgs("-Doto.version=$appVersion")
         if (desktopModuleIndexUrl.isNotBlank()) {
-            jvmArgs("-Dbitchord.module.index=$desktopModuleIndexUrl")
+            jvmArgs("-Doto.module.index=$desktopModuleIndexUrl")
         }
 
         buildTypes.release.proguard {
@@ -478,5 +478,5 @@ compose.desktop {
 
 // Kept at the package the sources import from, independent of the root project's name.
 compose.resources {
-    packageOfResClass = "bitchord.desktopapp.generated.resources"
+    packageOfResClass = "app.oto.desktop.resources"
 }

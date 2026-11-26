@@ -41,7 +41,7 @@ jobs:
         run: echo "value=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Build installer and portable app
-        run: .\gradlew.bat --stacktrace :desktopApp:packageExe :desktopApp:createDistributable "-Pbitchord.version=${{ steps.version.outputs.value }}"
+        run: .\gradlew.bat --stacktrace :desktopApp:packageExe :desktopApp:createDistributable "-Poto.version=${{ steps.version.outputs.value }}"
 
       - name: Size report
         shell: bash
@@ -59,7 +59,11 @@ jobs:
           $failed = $p.HasExited
           if ($failed) { Write-Host "Oto exited early with code $($p.ExitCode)" } else { Write-Host "Oto is still running"; Stop-Process -Id $p.Id -Force }
           $log = Join-Path $env:LOCALAPPDATA "Oto\oto.log"
-          if (Test-Path $log) { Get-Content $log -Tail 80 } else { Write-Host "no log at $log" }
+          if (Test-Path $log) {
+            Get-Content $log -Tail 80
+            $bad = Select-String -Path $log -Pattern "UnsatisfiedLinkError|NoClassDefFoundError|NoSuchMethodError|native Windows frame unavailable"
+            if ($bad) { Write-Host "Problems in the log:"; $bad | % { $_.Line }; $failed = $true }
+          } else { Write-Host "no log at $log" }
           if ($failed) { exit 1 }
 
       - name: Collect
