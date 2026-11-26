@@ -43,6 +43,11 @@ jobs:
       - name: Build installer and portable app
         run: .\gradlew.bat --stacktrace :desktopApp:packageExe :desktopApp:createDistributable "-Poto.version=${{ steps.version.outputs.value }}"
 
+      - name: Music video self-test
+        env:
+          OTO_NET_TEST: "1"
+        run: .\gradlew.bat :desktopApp:test --tests "app.oto.desktop.MusicVideoSelfTest" -i "-Poto.version=${{ steps.version.outputs.value }}"
+
       - name: Size report
         shell: bash
         run: |

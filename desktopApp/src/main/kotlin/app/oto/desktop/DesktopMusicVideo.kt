@@ -312,10 +312,10 @@ private const val PAUSED_POLL_MS = 60L
 private const val LATE_MS = 120L
 private const val EARLY_MS = 15L
 private const val MAX_WAIT_MS = 40L
-private const val END_OF_STREAM = Long.MIN_VALUE
+internal const val END_OF_STREAM = Long.MIN_VALUE
 
 /** FFmpeg, picture only, with each frame's presentation time so it can be shown on the beat. */
-private class DesktopVideoDecoder {
+internal class DesktopVideoDecoder {
     private var format: AVFormatContext? = null
     private var codec: AVCodecContext? = null
     private var packet: AVPacket? = null
