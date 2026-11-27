@@ -447,22 +447,37 @@ object YtMusicRepository {
         // by YouTube as an official music video. A lyric video, a live take, a fan upload or
         // another song by the same artist is not the song's video, so the player says there is none.
         val target = TrackMatcher.targetOf(song)
-        for (query in TrackMatcher.queries(target)) {
+        // The plain title search leaves many official videos out of its first page (Espresso,
+        // BIRDS OF A FEATHER), so the pointed "official video" search goes first.
+        val primary = TrackMatcher.primaryArtist(song.artist)
+        val queries = (listOf("$primary ${song.title} official video") + TrackMatcher.queries(target)).distinct()
+        val checked = HashSet<String>()
+        for (query in queries) {
             val candidates = search(query, SearchFilter.VIDEOS)
                 .getOrNull()
                 ?.filterIsInstance<SearchResult.Track>()
                 ?.map { it.song }
                 .orEmpty()
-            for (candidate in TrackMatcher.musicVideoCandidates(candidates, target).take(3)) {
-                // YouTube's own word on what the upload is: only an official music video
-                // (OMV) is the song's video — not a fan upload that happens to share the title.
-                val type = runCatching {
-                    InnertubeParser.parseVideoType(Innertube.next(candidate.videoId), candidate.videoId)
-                }.getOrNull()
-                if (type != MUSIC_VIDEO_TYPE_OMV) continue
-                Log.d(TAG, "video switch: '${song.title}' -> '${candidate.title}' ($query)")
-                rememberPair(audio = song, video = candidate)
-                return candidate
+            val fresh = TrackMatcher.musicVideoCandidates(candidates, target)
+                .filter { checked.add(it.videoId) }
+                .take(4)
+            if (fresh.isEmpty()) continue
+            // YouTube's own word on what each upload is, asked in parallel: only an official
+            // music video (OMV) is the song's video — not a fan upload sharing the title.
+            val official = coroutineScope {
+                fresh.map { candidate ->
+                    async {
+                        val type = runCatching {
+                            InnertubeParser.parseVideoType(Innertube.next(candidate.videoId), candidate.videoId)
+                        }.getOrNull()
+                        candidate.takeIf { type == MUSIC_VIDEO_TYPE_OMV }
+                    }
+                }.awaitAll()
+            }.firstOrNull { it != null }
+            if (official != null) {
+                Log.d(TAG, "video switch: '${song.title}' -> '${official.title}' ($query)")
+                rememberPair(audio = song, video = official)
+                return official
             }
         }
         Log.w(TAG, "video switch: no official video for '${song.title}' by '${song.artist}'")

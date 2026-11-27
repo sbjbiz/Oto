@@ -106,7 +106,7 @@ class MusicVideoSelfTest {
             }
             val result = runBlocking { YtMusicRepository.resolveVideo(song) }
             if (result != null) found++
-            println("    -> ${result?.videoId ?: "NO VIDEO"}")
+            println("    -> ${result?.let { "${it.videoId} '${it.title}' by '${it.artist}'" } ?: "NO VIDEO"}")
         }
         println("diag: $found of ${queries.size} converted")
     }
