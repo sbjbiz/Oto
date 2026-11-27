@@ -81,34 +81,33 @@ class MusicVideoSelfTest {
     fun convertToVideoAcrossPopularSongs() {
         if (System.getenv("OTO_NET_TEST") != "1") return
         val queries = listOf(
-            "One Kiss Calvin Harris", "Queen St twentythree", "Levitating Dua Lipa", "Shape of You Ed Sheeran",
-            "Flowers Miley Cyrus", "As It Was Harry Styles", "Espresso Sabrina Carpenter",
-            "Die With A Smile Lady Gaga", "APT. ROSE Bruno Mars", "BIRDS OF A FEATHER Billie Eilish",
-            "Cruel Summer Taylor Swift", "Despacito Luis Fonsi", "TUSA Karol G", "Starboy The Weeknd",
-            "Too Many Nights Metro Boomin", "BbY WOW Karol G",
+            "One Kiss Calvin Harris", "Levitating Dua Lipa", "Shape of You Ed Sheeran", "As It Was Harry Styles",
+            "Espresso Sabrina Carpenter", "Die With A Smile Lady Gaga", "BIRDS OF A FEATHER Billie Eilish",
+            "Starboy The Weeknd", "Too Many Nights Metro Boomin", "BbY WOW Karol G", "Queen St twentythree",
+            "Despacito Luis Fonsi",
         )
-        var found = 0
+        var converted = 0
         for (q in queries) {
             val song = runCatching {
                 runBlocking { YtMusicRepository.search(q, SearchFilter.SONGS) }.getOrThrow()
                     .filterIsInstance<SearchResult.Track>().map { it.song }.first { !it.isVideo }
-            }.getOrNull() ?: run { println("diag '$q': no song row"); continue }
-            val target = app.oto.data.sources.TrackMatcher.targetOf(song)
-            val videos = runBlocking { YtMusicRepository.search(app.oto.data.sources.TrackMatcher.queries(target).first(), SearchFilter.VIDEOS) }
-                .getOrNull().orEmpty().filterIsInstance<SearchResult.Track>().map { it.song }.take(6)
-            val passing = app.oto.data.sources.TrackMatcher.musicVideoCandidates(videos, target)
-            println("diag '${song.title}' by '${song.artist}' (${song.durationText}): ${videos.size} video rows, ${passing.size} pass the title/artist check")
-            videos.forEach { v ->
-                val type = runCatching {
-                    runBlocking { app.oto.data.innertube.InnertubeParser.parseVideoType(app.oto.data.innertube.Innertube.next(v.videoId), v.videoId) }
-                }.getOrNull()
-                println("    ${if (v in passing) "PASS" else "    "} ${v.videoId} '${v.title}' by '${v.artist}' type=$type")
+            }.getOrNull() ?: run { println("flow '$q': no song row"); continue }
+            val candidates = runBlocking { YtMusicRepository.videoCandidates(song) }.take(4)
+            println("flow '${song.title}' by '${song.artist}': ${candidates.size} candidates")
+            var chosen: String? = null
+            var unsure: String? = null
+            for (c in candidates) {
+                val r = runBlocking { DesktopVersionAligner.compare(song, c.song) }
+                println("    ${if (c.vouched) "official" else "upload  "} ${c.song.videoId} '${c.song.title}' by '${c.song.artist}': " +
+                    "measured=${r.measured} confidence=${"%.2f".format(r.confidence)} offset=${r.offsetMs}")
+                if (r.matches) { chosen = "${c.song.videoId} aligned at ${r.offsetMs}ms"; break }
+                if (c.vouched && !r.different && unsure == null) unsure = "${c.song.videoId} (unaligned)"
             }
-            val result = runBlocking { YtMusicRepository.resolveVideo(song) }
-            if (result != null) found++
-            println("    -> ${result?.let { "${it.videoId} '${it.title}' by '${it.artist}'" } ?: "NO VIDEO"}")
+            val pick = chosen ?: unsure
+            if (pick != null) converted++
+            println("    -> ${pick ?: "NO VIDEO"}")
         }
-        println("diag: $found of ${queries.size} converted")
+        println("flow: $converted of ${queries.size} converted")
     }
 
     @Test

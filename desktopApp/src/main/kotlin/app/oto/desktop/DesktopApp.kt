@@ -417,6 +417,7 @@ private const val MAX_CONSECUTIVE_FAILURES = 5
 /** How long a failed track's message stays up before the next track is tried. */
 private const val FAILURE_SKIP_DELAY_MS = 1_500L
 private const val TASTE_SEEDS = 3
+private const val MAX_VERSION_CANDIDATES = 4
 private const val TASTE_ROWS = 20
 
 /** Used for tracking restart of the current song when previous button is pressed. */
@@ -829,7 +830,14 @@ fun OtoDesktopApp() {
     /**
      * "Convert to video" / "Convert to audio": swaps the playing track for its other cut — the
      * official music video for a song, the song for a music video — at the same moment, in the
-     * same place in the queue. The video's picture then shows in the player's cover slot.
+     * same place in the queue.
+     *
+     * BitChord's way, made stricter. The candidates are found as it finds them (see
+     * [YtMusicRepository.videoCandidates]); then each is listened to against what is playing
+     * (see [DesktopVersionAligner]). The first that lines up is the one: same recording, and the
+     * exact point to cut to, so the song carries on rather than jumping by the length of a video
+     * intro. One that plainly does not line up is a different recording and is passed over — the
+     * check that stops a wrong video from playing.
      */
     fun convertCurrentVersion(current: Song) {
         if (versionSwitching) return
@@ -837,17 +845,39 @@ fun OtoDesktopApp() {
         scope.launch {
             try {
                 val toVideo = !current.isVideo
-                val found = withContext(Dispatchers.IO) {
+                val candidates = withContext(Dispatchers.IO) {
                     runCatching {
-                        if (toVideo) YtMusicRepository.resolveVideo(current) else YtMusicRepository.resolveAudio(current)
-                    }.getOrNull()
+                        if (toVideo) YtMusicRepository.videoCandidates(current) else YtMusicRepository.audioCandidates(current)
+                    }.getOrDefault(emptyList())
+                }.filter { it.song.videoId != current.videoId }.take(MAX_VERSION_CANDIDATES)
+
+                var chosen: YtMusicRepository.VersionCandidate? = null
+                var offsetMs: Long? = null
+                // A vouched candidate that could not be compared (audio unreachable, or a
+                // comparison too unsure to call): used unaligned if nothing better lines up, as
+                // BitChord does when its measurement fails.
+                var unsure: YtMusicRepository.VersionCandidate? = null
+                for (candidate in candidates) {
+                    if (playbackEngine.state.value.song?.videoId != current.videoId) return@launch
+                    val result = withContext(Dispatchers.IO) { DesktopVersionAligner.compare(current, candidate.song) }
+                    if (result.matches) {
+                        chosen = candidate
+                        offsetMs = result.offsetMs
+                        break
+                    }
+                    if (candidate.vouched && !result.different && unsure == null) unsure = candidate
                 }
-                if (found == null || found.videoId == current.videoId) {
+                if (chosen == null) chosen = unsure
+                if (chosen == null) {
                     DesktopPlayerHost.showMessage(
                         if (toVideo) "No music video found for this song" else "No audio version found for this video",
                     )
                     return@launch
                 }
+                val found = chosen.song
+                if (toVideo) YtMusicRepository.rememberVersions(audio = current, video = found)
+                else YtMusicRepository.rememberVersions(audio = found, video = current)
+
                 val swapped = current.copy(
                     videoId = found.videoId,
                     isVideo = toVideo,
@@ -861,10 +891,13 @@ fun OtoDesktopApp() {
                 if (state.song?.videoId != current.videoId) return@launch
                 val at = liveQueue.index
                 if (at !in liveQueue.songs.indices) return@launch
+                // Where the song has got to now — it kept playing while the other cut was found
+                // and measured — moved onto the other cut's clock.
+                val startAt = (state.positionMs + (offsetMs ?: 0L)).coerceAtLeast(0L)
                 liveQueue = liveQueue.copy(songs = liveQueue.songs.toMutableList().also { it[at] = swapped })
                 selectedSong = swapped
                 saveQueue()
-                playbackEngine.load(swapped, playWhenReady = state.isPlaying, startAtMs = state.positionMs)
+                playbackEngine.load(swapped, playWhenReady = state.isPlaying, startAtMs = startAt)
             } finally {
                 versionSwitching = false
             }
@@ -2710,7 +2743,7 @@ fun OtoDesktopApp() {
                             isLoading = playback.isLoading,
                             position = playerPosition,
                             durationMs = playback.durationMs,
-                            audioVersionSwitching = false,
+                            audioVersionSwitching = versionSwitching,
                             qualityUpgraded = false,
                             queue = liveQueue.songs,
                             queueIndex = liveQueue.index,

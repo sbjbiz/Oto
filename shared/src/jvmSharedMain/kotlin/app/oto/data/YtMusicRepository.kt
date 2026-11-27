@@ -396,92 +396,119 @@ object YtMusicRepository {
      */
     suspend fun resolveAudio(song: Song): Song {
         if (!song.isVideo) return song
-        audioVersionCache[song.videoId]?.let { return it }
-        officialVersion(song, wantAudio = true)?.let { audio ->
-            rememberPair(audio = audio, video = song)
-            return audio
+        val found = audioCandidates(song).firstOrNull()?.song
+        if (found == null) {
+            Log.w(TAG, "audio switch: no official song match for '${song.title}' by '${song.artist}'")
+            audioVersionCache[song.videoId] = song
+            return song
         }
-        val target = TrackMatcher.targetOf(song)
-        for (query in TrackMatcher.queries(target)) {
-            val candidates = search(query, SearchFilter.SONGS)
-                .getOrNull()
-                ?.filterIsInstance<SearchResult.Track>()
-                ?.map { it.song }
-                .orEmpty()
-            TrackMatcher.best(candidates, target)?.let { match ->
-                Log.d(TAG, "audio switch: '${song.title}' -> '${match.title}' ($query)")
-                rememberPair(audio = match, video = song)
-                return match
-            }
-            // Music-video timing is visual timing, not the audio release's
-            // timing. The manual switch may therefore use the exact official
-            // song/artist match even when the video has a long intro or outro.
-            TrackMatcher.bestOfficialAudioForVideo(candidates, target)?.let { match ->
-                Log.d(TAG, "audio switch: accepted video/runtime drift '${song.title}' -> '${match.title}' ($query)")
-                rememberPair(audio = match, video = song)
-                return match
-            }
-        }
-        Log.w(TAG, "audio switch: no official song match for '${song.title}' by '${song.artist}'")
-        audioVersionCache[song.videoId] = song
-        return song
+        rememberPair(audio = found, video = song)
+        return found
     }
 
     /**
-     * The inverse of [resolveAudio]: finds the video/music-video version of an
-     * audio-only track, used when switching back from audio to video.
-     * Resolves an audio-only track to its video version.
-     *
-     * This is the inverse of [resolveAudio] - it finds the music video
-     * for a catalogue track. Returns null when no video version is found.
+     * The inverse of [resolveAudio]: the official music video of a catalogue track, or null when
+     * there is none worth showing. The player itself goes further — see [videoCandidates].
      */
     suspend fun resolveVideo(song: Song): Song? {
         if (song.isVideo) return null
-        videoVersionCache[song.videoId]?.let { return it }
-        // YouTube Music's own Song/Video pairing first: exact, never a guess.
-        officialVersion(song, wantAudio = false)?.let { video ->
-            rememberPair(audio = song, video = video)
-            return video
+        val found = videoCandidates(song).firstOrNull { it.vouched }?.song ?: run {
+            Log.w(TAG, "video switch: no official video for '${song.title}' by '${song.artist}'")
+            return null
         }
-        // Signed out, YouTube states no pairing, so: the same title by the same artist, confirmed
-        // by YouTube as an official music video. A lyric video, a live take, a fan upload or
-        // another song by the same artist is not the song's video, so the player says there is none.
+        rememberPair(audio = song, video = found)
+        return found
+    }
+
+    /**
+     * One possible other cut of a track, best first, and whether YouTube itself vouches for it:
+     * its own Song/Video pairing, an upload it labels an official music video, or a catalogue
+     * song matched to a video. An unvouched one is only ever used once its sound has been
+     * checked against what is playing.
+     */
+    data class VersionCandidate(val song: Song, val vouched: Boolean)
+
+    /** Records a switch the player made, so switching back lands on the exact track. */
+    fun rememberVersions(audio: Song, video: Song) = rememberPair(audio, video)
+
+    /**
+     * The videos that could be [song]'s music video, best first — BitChord's own way of finding
+     * them (its pairing, then a search ranked by [TrackMatcher]), with two additions: a pointed
+     * "official video" search, since the plain one leaves many official videos off its first
+     * page, and YouTube's own label on each upload, so an official video ranks above a fan one
+     * sharing its title.
+     */
+    suspend fun videoCandidates(song: Song): List<VersionCandidate> {
+        if (song.isVideo) return emptyList()
+        val found = LinkedHashMap<String, VersionCandidate>()
+        videoVersionCache[song.videoId]?.let { found[it.videoId] = VersionCandidate(it, vouched = true) }
+        // YouTube Music's own Song/Video pairing first: exact, never a guess. (Signed out it pairs
+        // nothing, which is the usual case here.)
+        officialVersion(song, wantAudio = false)?.let { video ->
+            found.putIfAbsent(video.videoId, VersionCandidate(video, vouched = true))
+        }
+        if (found.isNotEmpty()) return found.values.toList()
+
         val target = TrackMatcher.targetOf(song)
-        // The plain title search leaves many official videos out of its first page (Espresso,
-        // BIRDS OF A FEATHER), so the pointed "official video" search goes first.
         val primary = TrackMatcher.primaryArtist(song.artist)
         val queries = (listOf("$primary ${song.title} official video") + TrackMatcher.queries(target)).distinct()
-        val checked = HashSet<String>()
         for (query in queries) {
-            val candidates = search(query, SearchFilter.VIDEOS)
+            val rows = search(query, SearchFilter.VIDEOS)
                 .getOrNull()
                 ?.filterIsInstance<SearchResult.Track>()
                 ?.map { it.song }
                 .orEmpty()
-            val fresh = TrackMatcher.musicVideoCandidates(candidates, target)
-                .filter { checked.add(it.videoId) }
+            val fresh = TrackMatcher.musicVideoCandidates(rows, target)
+                .filter { it.videoId !in found }
                 .take(4)
             if (fresh.isEmpty()) continue
-            // YouTube's own word on what each upload is, asked in parallel: only an official
-            // music video (OMV) is the song's video — not a fan upload sharing the title.
-            val official = coroutineScope {
+            // YouTube's own word on what each upload is, asked in parallel.
+            val typed = coroutineScope {
                 fresh.map { candidate ->
                     async {
                         val type = runCatching {
                             InnertubeParser.parseVideoType(Innertube.next(candidate.videoId), candidate.videoId)
                         }.getOrNull()
-                        candidate.takeIf { type == MUSIC_VIDEO_TYPE_OMV }
+                        VersionCandidate(candidate, vouched = type == MUSIC_VIDEO_TYPE_OMV)
                     }
                 }.awaitAll()
-            }.firstOrNull { it != null }
-            if (official != null) {
-                Log.d(TAG, "video switch: '${song.title}' -> '${official.title}' ($query)")
-                rememberPair(audio = song, video = official)
-                return official
             }
+            typed.forEach { found.putIfAbsent(it.song.videoId, it) }
+            if (found.values.count { it.vouched } >= 2) break
         }
-        Log.w(TAG, "video switch: no official video for '${song.title}' by '${song.artist}'")
-        return null
+        // Vouched first, each group in the order it was found.
+        return found.values.sortedByDescending { it.vouched }.also { list ->
+            Log.d(TAG, "video switch: candidates for '${song.title}': " +
+                list.joinToString { "${it.song.videoId}${if (it.vouched) "*" else ""}" })
+        }
+    }
+
+    /**
+     * The catalogue songs that could be [video]'s audio release, best first — BitChord's own
+     * pairing, then its search: [TrackMatcher.best], and the exact title-and-artist match
+     * a video with a long intro still deserves.
+     */
+    suspend fun audioCandidates(video: Song): List<VersionCandidate> {
+        if (!video.isVideo) return emptyList()
+        val found = LinkedHashMap<String, VersionCandidate>()
+        audioVersionCache[video.videoId]?.takeIf { it.videoId != video.videoId }
+            ?.let { found[it.videoId] = VersionCandidate(it, vouched = true) }
+        officialVersion(video, wantAudio = true)?.let { audio ->
+            found.putIfAbsent(audio.videoId, VersionCandidate(audio, vouched = true))
+        }
+        if (found.isNotEmpty()) return found.values.toList()
+        val target = TrackMatcher.targetOf(video)
+        for (query in TrackMatcher.queries(target)) {
+            val rows = search(query, SearchFilter.SONGS)
+                .getOrNull()
+                ?.filterIsInstance<SearchResult.Track>()
+                ?.map { it.song }
+                .orEmpty()
+            listOfNotNull(TrackMatcher.best(rows, target), TrackMatcher.bestOfficialAudioForVideo(rows, target))
+                .forEach { found.putIfAbsent(it.videoId, VersionCandidate(it, vouched = true)) }
+            if (found.size >= 2) break
+        }
+        return found.values.toList()
     }
 
     /**
