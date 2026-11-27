@@ -133,6 +133,8 @@ internal object DesktopPlayerHost : PlayerHost {
         .map { it.toOutputFormat() }
         .stateIn(scope, SharingStarted.Eagerly, OutputFormatUi())
 
+    override val musicVideoAspect: StateFlow<Float> get() = DesktopMusicVideoSessions.aspect
+
     override val musicVideoQuality: StateFlow<app.oto.ui.player.MusicVideoQualityUi> =
         DesktopMusicVideoQuality.state
 

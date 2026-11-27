@@ -476,8 +476,12 @@ object YtMusicRepository {
             typed.forEach { found.putIfAbsent(it.song.videoId, it) }
             if (found.values.count { it.vouched } >= 2) break
         }
-        // Vouched first, each group in the order it was found.
-        return found.values.sortedByDescending { it.vouched }.also { list ->
+        // Vouched first; among them, an upload that calls itself the video ahead of one that
+        // only carries the label; otherwise in the order found.
+        return found.values.sortedWith(
+            compareByDescending<VersionCandidate> { it.vouched }
+                .thenByDescending { CALLS_ITSELF_THE_VIDEO.containsMatchIn(it.song.title) },
+        ).also { list ->
             Log.d(TAG, "video switch: candidates for '${song.title}': " +
                 list.joinToString { "${it.song.videoId}${if (it.vouched) "*" else ""}" })
         }
@@ -516,6 +520,9 @@ object YtMusicRepository {
      * switch — or null when it pairs none.
      */
     private const val MUSIC_VIDEO_TYPE_OMV = "MUSIC_VIDEO_TYPE_OMV"
+
+    private val CALLS_ITSELF_THE_VIDEO =
+        Regex("""official\s+(music\s+)?video|\bm/?v\b|videoclip|clip officiel|video oficial""", RegexOption.IGNORE_CASE)
 
     private suspend fun officialVersion(song: Song, wantAudio: Boolean): Song? {
         val other = try {

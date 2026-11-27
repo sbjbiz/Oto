@@ -177,8 +177,11 @@ internal fun LandscapePlayerLayout(
     lyricsPane: @Composable (compact: Boolean) -> Unit,
     queuePane: @Composable () -> Unit,
     modifier: Modifier = Modifier,
-    /** A music video is showing: the sleeve is 16:9 rather than square. */
-    wideArtwork: Boolean = false,
+    /**
+     * The sleeve's shape when it is not the square cover — a music video's picture, width over
+     * height. Null keeps the square.
+     */
+    wideArtwork: Float? = null,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         background(Modifier.fillMaxSize())
@@ -241,8 +244,14 @@ internal fun LandscapePlayerLayout(
                         ) {
                             val side = minOf(maxWidth, maxHeight - LANDSCAPE_DESKTOP_CONTROLS_RESERVE)
                             artwork(
-                                if (wideArtwork) {
-                                    Modifier.size(width = side, height = side * 9f / 16f)
+                                if (wideArtwork != null) {
+                                    // As wide as the column allows, as tall as the picture's own
+                                    // shape asks — never taller than the square cover would be.
+                                    if (wideArtwork >= 1f) {
+                                        Modifier.size(width = side, height = side / wideArtwork)
+                                    } else {
+                                        Modifier.size(width = side * wideArtwork, height = side)
+                                    }
                                 } else {
                                     Modifier.size(side)
                                 },

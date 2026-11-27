@@ -176,10 +176,12 @@ object TrackMatcher {
     private val VIDEO_PACKAGING = setOf(
         "official", "music", "video", "videoclip", "clip", "mv", "m", "v", "hd", "hq", "4k", "uhd",
         "feat", "ft", "featuring", "with", "and", "x", "remastered", "remaster", "explicit", "clean",
-        "version", "original", "oficial", "officiel", "audio", "visual", "short", "film",
+        "version", "original", "oficial", "officiel", "short", "film",
     )
 
-    private val NOT_THE_VIDEO = Regex("""lyric|letra|visuali[sz]er|\blive\b|cover|karaoke|reaction|teaser|trailer|behind the scenes|mash-?up""")
+    // "Audio" and visualizer uploads come from the artist's own channel and YouTube labels some of
+    // them official videos too — a still picture, not the video.
+    private val NOT_THE_VIDEO = Regex("""lyric|letra|visuali[sz]er|\baudio\b|\blive\b|cover|karaoke|reaction|teaser|trailer|behind the scenes|mash-?up""")
 
     /**
      * The catalogue counterpart for a music-video upload selected explicitly

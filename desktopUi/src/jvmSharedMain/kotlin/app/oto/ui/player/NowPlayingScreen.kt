@@ -824,6 +824,14 @@ fun NowPlayingScreen(
     // full-screen button in the corner.
     val isMusicVideo = canvas.isMusicVideo()
     var videoFullscreen by remember { mutableStateOf(false) }
+    // The music video's own shape, so the sleeve fits the picture with no black bars; 16:9 until
+    // the first frames have shown where the picture really is, then eased into place.
+    val videoAspectRaw by PlayerPlatform.host.musicVideoAspect.collectAsStateWithLifecycle()
+    val videoAspect by animateFloatAsState(
+        targetValue = videoAspectRaw.takeIf { it > 0.2f }?.coerceIn(0.5f, 2.6f) ?: (16f / 9f),
+        animationSpec = tween(durationMillis = 260),
+        label = "musicVideoAspect",
+    )
     var showVideoQuality by remember { mutableStateOf(false) }
     LaunchedEffect(isMusicVideo) {
         if (!isMusicVideo) {
@@ -2063,7 +2071,7 @@ fun NowPlayingScreen(
                         }
                     },
                     actions = playerActions,
-                    wideArtwork = isMusicVideo,
+                    wideArtwork = if (isMusicVideo) videoAspect else null,
                     controls = { compact ->
                         LandscapeMainPane(
                             compact = compact,

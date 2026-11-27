@@ -1068,7 +1068,7 @@ object StreamResolver {
     // ---- Music video (Oto) ---------------------------------------------------
 
     /** A progressive, picture-only stream of a music video, shown in step with the audio. */
-    class VideoOnly(val url: String, val width: Int, val height: Int, val mimeType: String)
+    class VideoOnly(val url: String, val width: Int, val height: Int, val mimeType: String, val codec: String = "")
 
     /**
      * Every picture-only rendition YouTube offers for [videoId], one per height, largest first —
@@ -1076,6 +1076,17 @@ object StreamResolver {
      * Progressive only; H.264 preferred over VP9 at the same height because it is cheaper to
      * decode. Empty when YouTube offers nothing suitable.
      */
+    /** A rendition's codec string ("avc1.640028", "vp09…", "av01…"), where NewPipe states it. */
+    private fun codecOf(stream: VideoStream): String =
+        runCatching { stream.javaClass.getMethod("getCodec").invoke(stream) as? String }.getOrNull().orEmpty()
+
+    private fun codecCost(codec: String): Int = when {
+        codec.startsWith("avc") -> 0
+        codec.startsWith("vp9") || codec.startsWith("vp09") -> 1
+        codec.startsWith("av01") -> 3
+        else -> 2
+    }
+
     suspend fun resolveVideoOnly(videoId: String): List<VideoOnly> =
         extractionGate.withLock {
             withContext(Dispatchers.IO) {
@@ -1090,13 +1101,16 @@ object StreamResolver {
                             it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP &&
                             it.height > 0
                     }
+                    // Per height, the cheapest to decode in software first: H.264, then VP9, and
+                    // AV1 last — AV1 at 1080p is what made the picture stutter.
                     .sortedWith(
                         compareByDescending<VideoStream> { it.height }
+                            .thenBy { codecCost(codecOf(it)) }
                             .thenByDescending { it.format == MediaFormat.MPEG_4 }
                             .thenBy { it.fps },
                     )
                     .distinctBy { it.height }
-                    .map { VideoOnly(it.content, it.width, it.height, it.format?.mimeType.orEmpty()) }
+                    .map { VideoOnly(it.content, it.width, it.height, it.format?.mimeType.orEmpty(), codecOf(it)) }
                 TrackLog.d(TAG, "music video: ${renditions.joinToString { "${it.height}p" }} for $videoId")
                 renditions
             }

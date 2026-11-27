@@ -72,6 +72,9 @@ interface PlayerHost {
     /** Holds [height] for music videos from now on; null is Auto. */
     fun setMusicVideoQuality(height: Int?) {}
 
+    /** The playing music video's picture shape (width / height, borders cut off); 0 until known. */
+    val musicVideoAspect: StateFlow<Float> get() = NoVideoAspect
+
     /** Puts the window into full screen for a music video, or takes it back out. */
     fun setVideoFullscreen(on: Boolean) {}
 
@@ -266,6 +269,7 @@ enum class CanvasContentMode {
 const val MUSIC_VIDEO_SCHEME = "otovideo:"
 
 private val NoVideoQuality = kotlinx.coroutines.flow.MutableStateFlow(MusicVideoQualityUi())
+internal val NoVideoAspect: StateFlow<Float> = kotlinx.coroutines.flow.MutableStateFlow(0f)
 
 /** What the video quality box and drawer draw. */
 data class MusicVideoQualityUi(

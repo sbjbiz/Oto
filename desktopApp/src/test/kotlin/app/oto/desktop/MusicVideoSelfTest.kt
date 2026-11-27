@@ -1,6 +1,9 @@
 package app.oto.desktop
 
+import app.oto.data.TrackLog
 import app.oto.data.YtMusicRepository
+import app.oto.data.innertube.InnerTubeXResolver
+import app.oto.data.innertube.potoken.PoTokenGenerator
 import app.oto.data.innertube.StreamResolver
 import app.oto.data.model.SearchFilter
 import app.oto.data.model.SearchResult
@@ -16,6 +19,27 @@ import kotlin.test.assertTrue
  * decodes frames into the same reusable bitmap the player draws. Only runs when OTO_NET_TEST=1.
  */
 class MusicVideoSelfTest {
+    private companion object {
+        /** The same YouTube setup the app does at start-up, so streams resolve as they do there. */
+        val youtubeReady: Boolean by lazy {
+            TrackLog.echo = { level, tag, message, error ->
+                if (tag.contains("align", true) || level == 'W' || level == 'E') {
+                    println("  log $tag/$level: $message" + (error?.let { " (${it.message})" } ?: ""))
+                }
+            }
+            StreamResolver.maxKbps = { DesktopStreamClient.ceiling.get() ?: Int.MAX_VALUE }
+            InnerTubeXResolver.init(
+                filesDir = DesktopMediaCache.directory.toFile(),
+                store = DesktopInnerTubeXStore,
+                poTokenProvider = PoTokenGenerator(
+                    createMinter = { DesktopPoTokenWebView.getNewPoTokenGenerator() },
+                    available = { DesktopPoTokenWebView.available },
+                ).asTokenProvider(),
+            )
+            true
+        }
+    }
+
     @Test
     fun resolvesAndDecodesAMusicVideo() {
         if (System.getenv("OTO_NET_TEST") != "1") return
@@ -80,6 +104,7 @@ class MusicVideoSelfTest {
     @Test
     fun convertToVideoAcrossPopularSongs() {
         if (System.getenv("OTO_NET_TEST") != "1") return
+        check(youtubeReady)
         val queries = listOf(
             "One Kiss Calvin Harris", "Levitating Dua Lipa", "Shape of You Ed Sheeran", "As It Was Harry Styles",
             "Espresso Sabrina Carpenter", "Die With A Smile Lady Gaga", "BIRDS OF A FEATHER Billie Eilish",

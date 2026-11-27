@@ -13,6 +13,10 @@ import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import app.oto.ui.player.MusicVideoQualityUi
 import kotlinx.coroutines.flow.MutableStateFlow
+import androidx.compose.runtime.derivedStateOf
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -180,14 +184,19 @@ private fun pickRendition(
         ?: renditions.maxByOrNull { it.height }
 }
 
+/** Where the real picture is inside a decoded frame, once any baked-in black borders are cut off. */
+internal data class VideoCrop(val left: Int, val top: Int, val width: Int, val height: Int) {
+    val aspect: Float get() = width.toFloat() / height
+}
+
 /**
  * One playing music video, shared by every view showing it.
  *
- * The player's sleeve and the full-screen view used to open the stream each on their own, so
- * going full screen (and back) meant a fresh lookup, a fresh connection and a seek — a second or
- * more of black each way. Now the decoder lives here, and a view only draws its latest frame:
- * switching views is instant. Quality follows the largest view showing it and only ever steps
- * up within a session, so leaving full screen never reopens the stream at a lower rendition.
+ * The sleeve and the full-screen view draw from the same decoder, so switching between them is
+ * instant. Decoding runs a few frames ahead of the picture on its own thread, and frames are
+ * shown on the audio's clock: a slow frame to decode is absorbed by the ones already waiting
+ * instead of showing as a stall. Quality follows the largest view showing the video, only ever
+ * stepping up within a session, and never past FullHD — the most a processor decodes smoothly.
  */
 internal class DesktopMusicVideoSession(val videoId: String) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -195,6 +204,11 @@ internal class DesktopMusicVideoSession(val videoId: String) {
 
     /** The newest picture; it stays up across a change of rendition rather than going black. */
     val frame: StateFlow<ImageBitmap?> = _frame
+
+    private val _crop = MutableStateFlow<VideoCrop?>(null)
+
+    /** The picture inside the frame, borders cut off; null until the first frames have been seen. */
+    val crop: StateFlow<VideoCrop?> = _crop
 
     private val wanted = MutableStateFlow<Map<Any, Int>>(emptyMap())
     internal var holders = 0
@@ -228,6 +242,8 @@ internal class DesktopMusicVideoSession(val videoId: String) {
         }
     }
 
+    private class Decoded(val slot: Int, val ptsMs: Long, val generation: Long)
+
     private suspend fun play(stream: StreamResolver.VideoOnly) {
         DesktopMusicVideoQuality.active(stream.height)
         val decoder = DesktopVideoDecoder()
@@ -239,62 +255,100 @@ internal class DesktopMusicVideoSession(val videoId: String) {
             withContext(NonCancellable + Dispatchers.IO) { decoder.close() }
             return
         }
-        // Two bitmaps written in turn and reused for the whole video, so a frame costs a copy into
-        // memory that already exists rather than a fresh full-size allocation.
+        DesktopTrackLog.log("music video: playing ${stream.height}p ${stream.codec.ifBlank { stream.mimeType }} as ${decoder.width}x${decoder.height}")
+        // A small pool of bitmaps, reused for the whole video: [AHEAD] decoded and waiting, the one
+        // on screen, and the one before it (still being drawn while the next goes up).
         val info = ImageInfo.makeN32(decoder.width, decoder.height, ColorAlphaType.OPAQUE)
-        val buffers = Array(2) { Bitmap().apply { allocPixels(info) } }
-        val images = buffers.map { it.asComposeImageBitmap() }
-        var next = 0
+        val pool = Array(POOL) { Bitmap().apply { allocPixels(info) } }
+        val images = pool.map { it.asComposeImageBitmap() }
+        val free = Channel<Int>(POOL).apply { repeat(POOL) { trySend(it) } }
+        val ready = Channel<Decoded>(AHEAD)
+        val generation = java.util.concurrent.atomic.AtomicLong(0)
+        val pendingSeek = java.util.concurrent.atomic.AtomicLong(DesktopMusicVideoClock.nowMs())
+        val cropFinder = CropFinder(decoder.width, decoder.height)
         try {
-            val pixels = ByteArray(decoder.width * decoder.height * 4)
-            var shownPts = -1L
-            var seeksSeen = DesktopMusicVideoClock.seeks
-            var pendingPts = -1L
-            // Start where the audio already is: a conversion lands mid-song.
-            withContext(Dispatchers.IO) { decoder.seekTo(DesktopMusicVideoClock.nowMs()) }
-            while (currentCoroutineContext().isActive) {
-                // Nobody can see it: decode nothing. On the way back the drift check below seeks
-                // straight to wherever the song has got to.
-                if (!DesktopWindowVisibility.visible.value || DesktopWindowVisibility.minimized.value) {
-                    delay(HIDDEN_POLL_MS)
-                    continue
+            coroutineScope {
+                // Decoding: as far ahead as the pool allows, on its own thread.
+                launch(Dispatchers.IO) {
+                    val pixels = ByteArray(decoder.width * decoder.height * 4)
+                    while (isActive) {
+                        val seekTo = pendingSeek.getAndSet(-1L)
+                        val gen = generation.get()
+                        if (seekTo >= 0) decoder.seekTo(seekTo)
+                        val slot = free.receive()
+                        val pts = decoder.nextFrame(pixels)
+                        if (pts == END_OF_STREAM) {
+                            free.send(slot)
+                            delay(PAUSED_POLL_MS)
+                            continue
+                        }
+                        if (cropFinder.wants()) cropFinder.look(pixels)?.let { _crop.value = it }
+                        pool[slot].installPixels(pixels)
+                        pool[slot].notifyPixelsChanged()
+                        ready.send(Decoded(slot, pts, gen))
+                    }
                 }
-                val target = DesktopMusicVideoClock.nowMs()
-                val jumped = DesktopMusicVideoClock.seeks != seeksSeen
-                val drifted = shownPts >= 0 && (target < shownPts - 750 || target > shownPts + 2_500)
-                if (jumped || drifted) {
-                    seeksSeen = DesktopMusicVideoClock.seeks
-                    withContext(Dispatchers.IO) { decoder.seekTo(target) }
-                    pendingPts = -1L
+                // Showing: each frame when the audio reaches it.
+                var onScreen = -1
+                var behind = -1
+                var shownPts = -1L
+                var seeksSeen = DesktopMusicVideoClock.seeks
+                fun retire(slot: Int) {
+                    if (slot >= 0) free.trySend(slot)
+                }
+                fun restartAt(target: Long) {
+                    pendingSeek.set(target)
+                    generation.incrementAndGet()
+                    while (true) retire(ready.tryReceive().getOrNull()?.slot ?: break)
                     shownPts = -1L
                 }
-                if (!DesktopMusicVideoClock.playing && shownPts >= 0 && pendingPts < 0) {
-                    delay(PAUSED_POLL_MS)
-                    continue
-                }
-                if (pendingPts < 0) {
-                    pendingPts = withContext(Dispatchers.IO) { decoder.nextFrame(pixels) }
-                    if (pendingPts == END_OF_STREAM) {
+                while (isActive) {
+                    // Nobody can see it: show nothing, and the decoder idles on a full pool.
+                    if (!DesktopWindowVisibility.visible.value || DesktopWindowVisibility.minimized.value) {
+                        delay(HIDDEN_POLL_MS)
+                        continue
+                    }
+                    val now = DesktopMusicVideoClock.nowMs()
+                    val jumped = DesktopMusicVideoClock.seeks != seeksSeen
+                    val drifted = shownPts >= 0 && (now < shownPts - 750 || now > shownPts + 2_500)
+                    if (jumped || drifted) {
+                        seeksSeen = DesktopMusicVideoClock.seeks
+                        restartAt(now)
+                    }
+                    if (!DesktopMusicVideoClock.playing && shownPts >= 0) {
                         delay(PAUSED_POLL_MS)
                         continue
                     }
-                }
-                val now = DesktopMusicVideoClock.nowMs()
-                when {
-                    pendingPts < now - LATE_MS && shownPts >= 0 -> pendingPts = -1L
-                    pendingPts > now + EARLY_MS && shownPts >= 0 ->
-                        delay((pendingPts - now).coerceAtMost(MAX_WAIT_MS))
-                    else -> {
-                        val slot = next
-                        next = 1 - next
-                        withContext(Dispatchers.IO) {
-                            buffers[slot].installPixels(pixels)
-                            buffers[slot].notifyPixelsChanged()
-                        }
-                        _frame.value = images[slot]
-                        shownPts = pendingPts
-                        pendingPts = -1L
+                    // Polled rather than awaited: a cancelled wait could swallow a frame, and with
+                    // it a bitmap the pool would never get back.
+                    val next = ready.tryReceive().getOrNull() ?: run {
+                        delay(READY_POLL_MS)
+                        null
+                    } ?: continue
+                    if (next.generation != generation.get()) {
+                        retire(next.slot)
+                        continue
                     }
+                    var lead = next.ptsMs - DesktopMusicVideoClock.nowMs()
+                    // A frame from before a seek the decoder had not yet acted on.
+                    if (lead > STALE_MS) {
+                        retire(next.slot)
+                        continue
+                    }
+                    // Late: skip it, unless nothing is up yet.
+                    if (lead < -LATE_MS && shownPts >= 0) {
+                        retire(next.slot)
+                        continue
+                    }
+                    while (lead > EARLY_MS && DesktopMusicVideoClock.playing && isActive) {
+                        delay(lead.coerceAtMost(MAX_WAIT_MS))
+                        lead = next.ptsMs - DesktopMusicVideoClock.nowMs()
+                    }
+                    _frame.value = images[next.slot]
+                    retire(behind)
+                    behind = onScreen
+                    onScreen = next.slot
+                    shownPts = next.ptsMs
                 }
             }
         } finally {
@@ -303,6 +357,63 @@ internal class DesktopMusicVideoSession(val videoId: String) {
     }
 
     internal fun stop() = scope.cancel()
+}
+
+/**
+ * Finds the black borders a video carries in its own frames — a 4:3 or cinema picture inside a
+ * 16:9 stream — so they can be cut off. Looks at a handful of frames spread over the opening
+ * seconds and keeps the union of what is lit, so a dark scene or a fade from black cannot shrink
+ * the picture.
+ */
+private class CropFinder(private val width: Int, private val height: Int) {
+    private var seen = 0
+    private var looks = 0
+    private var left = width
+    private var top = height
+    private var right = -1
+    private var bottom = -1
+
+    fun wants(): Boolean = looks < LOOKS && (seen++ % EVERY == EVERY - 1)
+
+    fun look(bgra: ByteArray): VideoCrop? {
+        looks++
+        val step = 4
+        for (y in 0 until height step 2) {
+            val row = y * width * 4
+            for (x in 0 until width step step) {
+                val at = row + x * 4
+                val luma = ((bgra[at + 2].toInt() and 0xFF) * 3 + (bgra[at + 1].toInt() and 0xFF) * 6 +
+                    (bgra[at].toInt() and 0xFF)) / 10
+                if (luma > BLACK) {
+                    if (x < left) left = x
+                    if (x > right) right = x
+                    if (y < top) top = y
+                    if (y > bottom) bottom = y
+                }
+            }
+        }
+        if (right < 0 || bottom < 0) return null
+        val w = (right - left + step).coerceAtMost(width - left)
+        val h = (bottom - top + 2).coerceAtMost(height - top)
+        // Too small to be the whole picture yet (a dark opening): keep looking, show it all.
+        if (w * h < width * height * 0.35) return null
+        // Borders thinner than this are not borders.
+        val trimmedX = width - w
+        val trimmedY = height - h
+        val crop = VideoCrop(
+            left = if (trimmedX < width * 0.03) 0 else left,
+            top = if (trimmedY < height * 0.03) 0 else top,
+            width = if (trimmedX < width * 0.03) width else w,
+            height = if (trimmedY < height * 0.03) height else h,
+        )
+        return crop
+    }
+
+    private companion object {
+        const val LOOKS = 8
+        const val EVERY = 12
+        const val BLACK = 24
+    }
 }
 
 /** The open music-video sessions, by video, and the renditions already looked up. */
@@ -317,8 +428,24 @@ internal object DesktopMusicVideoSessions {
     /** Stream URLs expire after a few hours; looked up again well before that. */
     private const val RENDITIONS_TTL_MS = 2L * 60 * 60 * 1000
 
+    /**
+     * Past FullHD the picture is decoded by the processor faster than it can be shown — 2K and 4K
+     * stuttered, and 4K could take the app down — so they are not offered.
+     */
+    private const val MAX_HEIGHT_OFFERED = 1080
+
+    private val _aspect = MutableStateFlow(0f)
+
+    /** The playing video's picture shape, borders cut off; 0 until it is known. */
+    val aspect: StateFlow<Float> = _aspect
+
     fun acquire(videoId: String): DesktopMusicVideoSession = synchronized(open) {
-        val session = open.getOrPut(videoId) { DesktopMusicVideoSession(videoId) }
+        val session = open.getOrPut(videoId) {
+            _aspect.value = 0f
+            DesktopMusicVideoSession(videoId).also { created ->
+                lingering.launch { created.crop.collect { crop -> if (crop != null) _aspect.value = crop.aspect } }
+            }
+        }
         session.holders++
         session.closing?.cancel()
         session.closing = null
@@ -348,7 +475,7 @@ internal object DesktopMusicVideoSessions {
             runCatching { StreamResolver.resolveVideoOnly(videoId) }
                 .onFailure { DesktopTrackLog.log("music video: lookup failed for $videoId: ${it.message}") }
                 .getOrDefault(emptyList())
-        }
+        }.filter { it.height <= MAX_HEIGHT_OFFERED }
         if (found.isNotEmpty()) lookedUp[videoId] = System.currentTimeMillis() to found
         return found
     }
@@ -365,8 +492,10 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
             DesktopMusicVideoSessions.release(session)
         }
     }
-    val frame by session.frame.collectAsState()
-    val rendered = frame != null
+    // Read in the draw below, not here: a new frame then repaints the picture without recomposing.
+    val frameState = session.frame.collectAsState()
+    val cropState = session.crop.collectAsState()
+    val rendered by remember(session) { derivedStateOf { frameState.value != null } }
     val reportRendered by rememberUpdatedState(spec.onRenderedChanged)
     val reportCover by rememberUpdatedState(spec.onCoverChanged)
     val reportFrame by rememberUpdatedState(spec.onFrameCaptured)
@@ -374,7 +503,7 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
 
     LaunchedEffect(rendered) {
         reportRendered(rendered)
-        if (rendered) frame?.let(reportFrame)
+        if (rendered) frameState.value?.let(reportFrame)
     }
     // Already showing when it mounts with a picture to hand (a view swap), so no fade then.
     val alpha by animateFloatAsState(
@@ -397,10 +526,12 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
             .onSizeChanged { session.want(holder, it.height) }
             .graphicsLayer { this.alpha = alpha * presentationAlpha() },
     ) {
-        val image = frame ?: return@Canvas
-        // Letterboxed rather than cropped: a music video's frame is the picture, not decoration.
-        drawRect(Color.Black)
-        val clipAspect = image.width.toFloat() / image.height
+        val image = frameState.value ?: return@Canvas
+        val crop = cropState.value?.takeIf { it.left + it.width <= image.width && it.top + it.height <= image.height }
+            ?: VideoCrop(0, 0, image.width, image.height)
+        // Only the picture itself, fitted to the view. The sleeve takes the picture's own shape,
+        // so there it fills edge to edge; full screen keeps the whole picture in view.
+        val clipAspect = crop.aspect
         val viewAspect = size.width / size.height
         val (drawWidth, drawHeight) = if (clipAspect > viewAspect) {
             size.width to size.width / clipAspect
@@ -409,16 +540,20 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
         }
         drawImage(
             image = image,
-            srcOffset = IntOffset.Zero,
-            srcSize = IntSize(image.width, image.height),
+            srcOffset = IntOffset(crop.left, crop.top),
+            srcSize = IntSize(crop.width, crop.height),
             dstOffset = IntOffset(((size.width - drawWidth) / 2f).roundToInt(), ((size.height - drawHeight) / 2f).roundToInt()),
             dstSize = IntSize(drawWidth.roundToInt(), drawHeight.roundToInt()),
-            filterQuality = androidx.compose.ui.graphics.FilterQuality.Medium,
+            filterQuality = androidx.compose.ui.graphics.FilterQuality.Low,
         )
     }
 }
 
 private const val PAUSED_POLL_MS = 60L
+private const val POOL = 6
+private const val AHEAD = 3
+private const val STALE_MS = 3_000L
+private const val READY_POLL_MS = 4L
 private const val HIDDEN_POLL_MS = 250L
 private const val LATE_MS = 120L
 private const val EARLY_MS = 15L
