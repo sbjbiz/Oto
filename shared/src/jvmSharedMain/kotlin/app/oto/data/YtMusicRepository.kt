@@ -433,9 +433,9 @@ object YtMusicRepository {
             videoVersionCache[song.videoId] = video
             return video
         }
-        // Only when YouTube states no pairing: an upload that calls itself the official video of
-        // exactly this title by this artist. A lyric video, a live take, a visualizer or another
-        // song by the same artist is not the song's video, so the player says there is none.
+        // Signed out, YouTube states no pairing, so: the same title by the same artist, confirmed
+        // by YouTube as an official music video. A lyric video, a live take, a fan upload or
+        // another song by the same artist is not the song's video, so the player says there is none.
         val target = TrackMatcher.targetOf(song)
         for (query in TrackMatcher.queries(target)) {
             val candidates = search(query, SearchFilter.VIDEOS)
@@ -443,10 +443,16 @@ object YtMusicRepository {
                 ?.filterIsInstance<SearchResult.Track>()
                 ?.map { it.song }
                 .orEmpty()
-            TrackMatcher.officialVideoFor(candidates, target)?.let { match ->
-                Log.d(TAG, "video switch: '${song.title}' -> '${match.title}' ($query)")
-                videoVersionCache[song.videoId] = match
-                return match
+            for (candidate in TrackMatcher.musicVideoCandidates(candidates, target).take(3)) {
+                // YouTube's own word on what the upload is: only an official music video
+                // (OMV) is the song's video — not a fan upload that happens to share the title.
+                val type = runCatching {
+                    InnertubeParser.parseVideoType(Innertube.next(candidate.videoId), candidate.videoId)
+                }.getOrNull()
+                if (type != MUSIC_VIDEO_TYPE_OMV) continue
+                Log.d(TAG, "video switch: '${song.title}' -> '${candidate.title}' ($query)")
+                videoVersionCache[song.videoId] = candidate
+                return candidate
             }
         }
         Log.w(TAG, "video switch: no official video for '${song.title}' by '${song.artist}'")
@@ -457,6 +463,8 @@ object YtMusicRepository {
      * The other cut of [song] as YouTube Music pairs it — the pairing behind its own Song/Video
      * switch — or null when it pairs none.
      */
+    private const val MUSIC_VIDEO_TYPE_OMV = "MUSIC_VIDEO_TYPE_OMV"
+
     private suspend fun officialVersion(song: Song, wantAudio: Boolean): Song? {
         val other = try {
             InnertubeParser.parseVersionPair(Innertube.next(song.videoId), song.videoId, wantAudio)

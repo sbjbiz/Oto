@@ -2618,7 +2618,11 @@ fun OtoDesktopApp() {
                         query = query,
                         onQueryChange = { text ->
                             editQuery(text)
-                            if (destination != DesktopDestination.SEARCH || overlays.settingsPage != null) {
+                            // Typing always shows the results, even from an artist, album or
+                            // playlist page opened over Search.
+                            val searchCovered = openedArtist != null || openedCollection != null ||
+                                overlays.replay || libraryShowAll != null
+                            if (destination != DesktopDestination.SEARCH || overlays.settingsPage != null || searchCovered) {
                                 selectDestination(DesktopDestination.SEARCH)
                             }
                         },

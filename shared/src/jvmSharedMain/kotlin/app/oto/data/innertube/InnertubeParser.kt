@@ -1159,6 +1159,10 @@ object InnertubeParser {
         return null
     }
 
+    /** How YouTube types [videoId]'s own row in a `next` response — official video, art track, or upload. */
+    fun parseVideoType(root: JsonElement, videoId: String): String? =
+        collectRenderers(root, "playlistPanelVideoRenderer").firstOrNull { it.s("videoId") == videoId }?.musicVideoType()
+
     private fun JsonObject.musicVideoType(): String? =
         o("navigationEndpoint").o("watchEndpoint").o("watchEndpointMusicSupportedConfigs")
             .o("watchEndpointMusicConfig").s("musicVideoType")

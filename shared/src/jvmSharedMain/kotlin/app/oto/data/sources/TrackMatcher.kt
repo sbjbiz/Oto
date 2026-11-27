@@ -150,31 +150,27 @@ object TrackMatcher {
      * because it happens to share a title.
      */
     /**
-     * The official music video of [target] among video [candidates], or null.
-     *
-     * Stricter than [best] on purpose, because nobody is choosing here: the title must be the
-     * same recording (same core, same version markers), an artist must be shared, and the upload
-     * must call itself the official video. Lyric videos, visualizers, live takes, covers and
-     * other songs by the same artist are all turned away.
+     * Video [candidates] that could be [target]'s music video, best first: the same recording
+     * (same core title, same version markers) by a shared artist, and not a lyric video,
+     * visualizer, live take, cover or the like. The caller still has to confirm one is the
+     * official video — this only narrows who is asked.
      */
-    fun officialVideoFor(candidates: List<Song>, target: Target): Song? {
+    fun musicVideoCandidates(candidates: List<Song>, target: Target): List<Song> {
         val wanted = parseTitle(target.title, target.artist)
-        if (wanted.core.isEmpty()) return null
+        if (wanted.core.isEmpty()) return emptyList()
         return candidates
             .mapNotNull { candidate ->
-                val raw = candidate.title.lowercase()
-                if (!OFFICIAL_VIDEO.containsMatchIn(raw) || NOT_THE_VIDEO.containsMatchIn(raw)) return@mapNotNull null
+                if (NOT_THE_VIDEO.containsMatchIn(candidate.title.lowercase())) return@mapNotNull null
                 val got = parseTitle(candidate.title, candidate.artist)
                 if (wanted.core != got.core || wanted.versions != got.versions) return@mapNotNull null
                 val artist = artistScore(target.artist, candidate.artist) ?: return@mapNotNull null
                 candidate to artist
             }
-            .maxByOrNull { it.second }
-            ?.first
+            .sortedByDescending { it.second }
+            .map { it.first }
     }
 
-    private val OFFICIAL_VIDEO = Regex("""official\s+(music\s+)?video|\bofficial\s+mv\b|\(\s*m/?v\s*\)|\[\s*m/?v\s*]""")
-    private val NOT_THE_VIDEO = Regex("""lyric|visuali[sz]er|\blive\b|cover|karaoke|reaction|teaser|trailer|behind the scenes""")
+    private val NOT_THE_VIDEO = Regex("""lyric|letra|visuali[sz]er|\blive\b|cover|karaoke|reaction|teaser|trailer|behind the scenes|mash-?up""")
 
     fun bestOfficialAudioForVideo(candidates: List<Song>, target: Target): Song? {
         val wanted = parseTitle(target.title, target.artist)
