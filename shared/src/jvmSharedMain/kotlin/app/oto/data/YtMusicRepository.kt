@@ -63,7 +63,7 @@ object YtMusicRepository {
     suspend fun home(): Result<HomeFeed> = call("home") {
         // Signed out, YouTube builds Home from wherever the connection comes from, which leaves
         // it full of one region's music. Home is built from the charts instead: what is being
-        // played most right now in the US, the UK, France and Spain, then worldwide.
+        // played most right now in the US, the UK, France and Spain.
         val charts = coroutineScope {
             HOME_CHARTS.map { (country, name) -> async { chartShelves(country, name) } }.awaitAll().flatten()
         }
@@ -77,7 +77,6 @@ object YtMusicRepository {
         "GB" to "United Kingdom",
         "FR" to "France",
         "ES" to "Spain",
-        "ZZ" to "Global",
     )
 
     /**
@@ -86,10 +85,11 @@ object YtMusicRepository {
      */
     private suspend fun chartShelves(country: String, name: String): List<HomeShelf> = coroutineScope {
         val page = runCatching { Innertube.charts(country) }.getOrNull() ?: return@coroutineScope emptyList()
-        val playlists = InnertubeParser.parseChartPlaylists(page)
-            .filter { (title, _) -> CHART_PLAYLIST.containsMatchIn(title) }
-            .sortedBy { (title, _) -> if (title.contains("trending", ignoreCase = true)) 0 else 1 }
-            .take(2)
+        val charted = InnertubeParser.parseChartPlaylists(page)
+        val playlists = listOfNotNull(
+            charted.firstOrNull { (title, _) -> TRENDING_CHART.containsMatchIn(title) },
+            charted.firstOrNull { (title, _) -> TOP_CHART.containsMatchIn(title) },
+        )
             .map { (title, browseId) ->
                 async {
                     val songs = browseSongs(browseId).getOrNull()?.songs.orEmpty().take(HOME_CHART_ROWS)
@@ -106,7 +106,8 @@ object YtMusicRepository {
         (playlists + albums).filter { it.items.isNotEmpty() }
     }
 
-    private val CHART_PLAYLIST = Regex("trending|top 100|top music videos|top songs", RegexOption.IGNORE_CASE)
+    private val TRENDING_CHART = Regex("^trending", RegexOption.IGNORE_CASE)
+    private val TOP_CHART = Regex("^top 100 music videos", RegexOption.IGNORE_CASE)
     private const val HOME_CHART_ROWS = 20
 
     /** Recently played is rendered independently, at the top of the Play page. */
