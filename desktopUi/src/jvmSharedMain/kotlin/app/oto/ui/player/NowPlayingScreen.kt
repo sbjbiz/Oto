@@ -2040,15 +2040,25 @@ fun NowPlayingScreen(
                                     .graphicsLayer { alpha = if (panelOpen) 0f else dockFade() },
                             )
                             if (isMusicVideo) {
-                                VideoCornerControls(
-                                    fullscreen = false,
-                                    onToggleFullscreen = { videoFullscreen = true },
-                                    onOpenQuality = { showVideoQuality = true },
+                                // As on YouTube: up as the video starts, gone a few seconds into
+                                // playback, back on a click or the mouse moving over the video.
+                                val videoChrome = rememberVideoChrome(isPlaying)
+                                Box(Modifier.matchParentSize().wakesVideoChrome(videoChrome))
+                                AnimatedVisibility(
+                                    visible = videoChrome.shown,
+                                    enter = fadeIn(tween(150)),
+                                    exit = fadeOut(tween(300)),
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
                                         .padding(10.dp)
                                         .graphicsLayer { alpha = dockFade() },
-                                )
+                                ) {
+                                    VideoCornerControls(
+                                        fullscreen = false,
+                                        onToggleFullscreen = { videoFullscreen = true },
+                                        onOpenQuality = { showVideoQuality = true },
+                                    )
+                                }
                             }
                         }
                     },

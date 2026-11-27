@@ -40,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -214,8 +215,59 @@ private fun QualityRow(name: String, detail: String?, active: Boolean, onSelect:
 }
 
 /**
+ * Whether a playing music video's controls are on screen, the way YouTube does it: up when the
+ * video starts, gone a few seconds into playback, back the moment the video is clicked or the
+ * mouse moves over it. Always up while paused.
+ */
+internal class VideoChromeState {
+    var shown by mutableStateOf(true)
+        private set
+    private var pokes by mutableIntStateOf(0)
+
+    /** Brings the controls up and starts the wait over. */
+    fun wake() {
+        shown = true
+        pokes++
+    }
+
+    @Composable
+    internal fun HideWhileIdle(isPlaying: Boolean) {
+        LaunchedEffect(shown, pokes, isPlaying) {
+            if (shown && isPlaying) {
+                delay(VIDEO_CONTROLS_IDLE_MS)
+                shown = false
+            }
+        }
+    }
+}
+
+@Composable
+internal fun rememberVideoChrome(isPlaying: Boolean): VideoChromeState {
+    val state = remember { VideoChromeState() }
+    state.HideWhileIdle(isPlaying)
+    return state
+}
+
+/**
+ * Watches the video for a click or the mouse moving over it, without taking either away from
+ * what is underneath, and wakes [state]'s controls.
+ */
+internal fun Modifier.wakesVideoChrome(state: VideoChromeState): Modifier =
+    pointerInput(state) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                if (event.type == PointerEventType.Press || event.type == PointerEventType.Move) state.wake()
+            }
+        }
+    }
+
+private const val VIDEO_CONTROLS_IDLE_MS = 3_000L
+
+/**
  * A music video filling the window: the picture letterboxed in black, and over it the title,
- * the corner controls, the transport and the scrubber — always on screen, never timed away.
+ * the corner controls, the transport and the scrubber. They hide a few seconds into playback
+ * and come back on a click or a mouse movement, as on YouTube.
  */
 @Composable
 internal fun FullscreenVideoPlayer(
@@ -228,14 +280,21 @@ internal fun FullscreenVideoPlayer(
     transport: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val chrome = rememberVideoChrome(isPlaying)
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Color.Black)
+            .wakesVideoChrome(chrome),
     ) {
         video(Modifier.fillMaxSize())
 
-        run {
+        AnimatedVisibility(
+            visible = chrome.shown,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(300)),
+            modifier = Modifier.fillMaxSize(),
+        ) {
             Box(
                 Modifier
                     .fillMaxSize()
