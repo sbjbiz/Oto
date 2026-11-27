@@ -276,21 +276,6 @@ object InnertubeParser {
         return out
     }
 
-    /**
-     * The chart playlists on a charts page — "Top 100 Music Videos …", "Trending 20 …" — as
-     * (title, browse id). [carouselShelf] drops that shelf on purpose, so Home asks for it here.
-     */
-    fun parseChartPlaylists(response: JsonObject): List<Pair<String, String>> =
-        collectRenderers(response, "musicCarouselShelfRenderer").flatMap { carousel ->
-            carousel.a("contents").orEmpty().mapNotNull { item ->
-                val card = item.o("musicTwoRowItemRenderer") ?: return@mapNotNull null
-                val title = card.o("title").runs().takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val browseId = card.o("navigationEndpoint").o("browseEndpoint").s("browseId")
-                    ?.takeIf { it.startsWith("VL") } ?: return@mapNotNull null
-                title to browseId
-            }
-        }.distinctBy { it.second }
-
     private fun carouselShelf(carousel: JsonObject): HomeShelf? {
         val header = carousel.o("header").o("musicCarouselShelfBasicHeaderRenderer")
         val title = header.o("title").runs()

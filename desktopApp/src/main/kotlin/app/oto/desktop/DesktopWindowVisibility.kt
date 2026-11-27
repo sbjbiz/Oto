@@ -24,9 +24,17 @@ internal object DesktopWindowVisibility {
     private var windowRef: WeakReference<Window>? = null
     private var isListenerInstalled = false
 
+    private val _minimized = MutableStateFlow(false)
+
+    /** Minimized to the taskbar: on screen as far as [visible] knows, but nobody can see it. */
+    val minimized: StateFlow<Boolean> = _minimized
+
     /** Attaches the active Compose window so show() can bring it to the foreground. */
     fun attachWindow(window: Window) {
         windowRef = WeakReference(window)
+        (window as? Frame)?.addWindowStateListener { event ->
+            _minimized.value = event.newState and Frame.ICONIFIED != 0
+        }
     }
 
     /**

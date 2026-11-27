@@ -61,54 +61,9 @@ object YtMusicRepository {
      * it's empty and there's nothing more to fetch.
      */
     suspend fun home(): Result<HomeFeed> = call("home") {
-        // Signed out, YouTube builds Home from wherever the connection comes from, which leaves
-        // it full of one region's music. Home is built from the charts instead: what is being
-        // played most right now in the US, the UK, France and Spain.
-        val charts = coroutineScope {
-            HOME_CHARTS.map { (country, name) -> async { chartShelves(country, name) } }.awaitAll().flatten()
-        }
-        if (charts.isNotEmpty()) return@call HomeFeed(charts, null)
         val home = Innertube.browse("FEmusic_home")
         HomeFeed(InnertubeParser.parseHome(home), InnertubeParser.continuationToken(home))
     }
-
-    private val HOME_CHARTS = listOf(
-        "US" to "United States",
-        "GB" to "United Kingdom",
-        "FR" to "France",
-        "ES" to "Spain",
-    )
-
-    /**
-     * One country's chart as Home shelves: its trending and top music-video playlists, opened
-     * into playable rows, then its top albums.
-     */
-    private suspend fun chartShelves(country: String, name: String): List<HomeShelf> = coroutineScope {
-        val page = runCatching { Innertube.charts(country) }.getOrNull() ?: return@coroutineScope emptyList()
-        val charted = InnertubeParser.parseChartPlaylists(page)
-        val playlists = listOfNotNull(
-            charted.firstOrNull { (title, _) -> TRENDING_CHART.containsMatchIn(title) },
-            charted.firstOrNull { (title, _) -> TOP_CHART.containsMatchIn(title) },
-        )
-            .map { (title, browseId) ->
-                async {
-                    val songs = browseSongs(browseId).getOrNull()?.songs.orEmpty().take(HOME_CHART_ROWS)
-                    val label = if (title.contains("trending", ignoreCase = true)) "Trending" else "Top songs"
-                    HomeShelf(
-                        "$label · $name",
-                        songs.map { ShelfItem(it.title, it.artist, it.thumbnailUrl, it.videoId, null) },
-                    )
-                }
-            }.awaitAll()
-        val albums = InnertubeParser.parseHome(page)
-            .filter { it.title.contains("album", ignoreCase = true) }
-            .map { it.copy(title = "Top albums · $name") }
-        (playlists + albums).filter { it.items.isNotEmpty() }
-    }
-
-    private val TRENDING_CHART = Regex("^trending", RegexOption.IGNORE_CASE)
-    private val TOP_CHART = Regex("^top 100 music videos", RegexOption.IGNORE_CASE)
-    private const val HOME_CHART_ROWS = 20
 
     /** Recently played is rendered independently, at the top of the Play page. */
     suspend fun homeRecentlyPlayed(): Result<HomeShelf?> = call("home:recent") { recentlyPlayed() }
@@ -118,7 +73,10 @@ object YtMusicRepository {
         shelvesOf(browseId)
     }
 
-    val HOME_SUPPLEMENT_BROWSE_IDS = emptyList<String>()
+    val HOME_SUPPLEMENT_BROWSE_IDS = listOf(
+        "FEmusic_new_releases",
+        "FEmusic_explore",
+    )
 
     /**
      * More Home shelves past [home]'s first page, following FEmusic_home's

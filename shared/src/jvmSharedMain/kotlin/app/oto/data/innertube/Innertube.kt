@@ -529,15 +529,6 @@ object Innertube {
 
     // ---- Public API ---------------------------------------------------------
 
-    /** The charts page for one country ("ZZ" is global), as the country picker on it asks. */
-    suspend fun charts(country: String): JsonObject =
-        postMusic("browse") {
-            put("browseId", "FEmusic_charts")
-            putJsonObject("formData") {
-                putJsonArray("selectedValues") { add(JsonPrimitive(country)) }
-            }
-        }
-
     suspend fun browse(browseId: String, params: String? = null): JsonObject =
         postMusic("browse") {
             put("browseId", browseId)

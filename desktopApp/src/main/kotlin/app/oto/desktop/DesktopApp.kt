@@ -2535,10 +2535,6 @@ fun OtoDesktopApp() {
                             playPrevious()
                             true
                         }
-                        event.key == Key.F11 -> {
-                            DesktopWindowMode.toggle()
-                            true
-                        }
                         event.key == Key.DirectionLeft && event.isAltPressed && !overlays.nowPlaying -> {
                             goBack()
                             true
@@ -2546,11 +2542,6 @@ fun OtoDesktopApp() {
                         // One layer at a time, innermost first: the player's own side panel, then
                         // the player.
                         event.key == Key.Escape -> when {
-                            // F11's full screen first: Esc puts the window back the way it was.
-                            DesktopWindowMode.fullScreen.value && !DesktopWindowMode.heldByVideo -> {
-                                DesktopWindowMode.setFullScreen(false)
-                                true
-                            }
                             // The player's own layers first — the lyrics, the queue, a
                             // drawer — in the order Android's back reaches them.
                             overlays.nowPlaying && PlayerBack.dispatch() -> true
@@ -4300,9 +4291,6 @@ private fun DesktopFrame(
     val appBackground by DesktopWindowBackdrop.appBackground.collectAsState()
     val glass = material != DesktopBackdrop.OFF
     val materialBehindApp = glass && appBackground
-    // Like OBS's full-screen interface: the top bar goes away only in true (F11) full screen, and
-    // comes back in a floating or maximized window.
-    val fullScreen by DesktopWindowMode.fullScreen.collectAsState()
     val maximized by DesktopWindowMode.maximized.collectAsState()
     val roundCorners = DesktopPlatform.isMac && !maximized
     CompositionLocalProvider(LocalDesktopHaze provides haze) {
@@ -4326,7 +4314,7 @@ private fun DesktopFrame(
                         Row(Modifier.fillMaxSize()) {
                             if (!compact) sidebar()
                             Column(Modifier.weight(1f).fillMaxHeight()) {
-                            if (!fullScreen) topBar(compact)
+                            topBar(compact)
                             Row(Modifier.fillMaxWidth().weight(1f)) {
                                 Box(
                                     Modifier

@@ -82,6 +82,9 @@ internal fun DesktopTitleBarDragArea(
 @Composable
 internal fun DesktopWindowButtons(modifier: Modifier = Modifier) {
     if (!DesktopPlatform.drawsOwnWindowFrame) return
+    // Like OBS: true (F11) full screen has no caption buttons; everything else stays.
+    val fullScreen by DesktopWindowMode.fullScreen.collectAsState()
+    if (fullScreen) return
     val actions = LocalDesktopWindowActions.current ?: return
     val maximized by DesktopWindowMode.maximized.collectAsState()
     val focused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused

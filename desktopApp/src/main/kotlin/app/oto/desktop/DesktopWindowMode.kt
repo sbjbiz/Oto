@@ -39,6 +39,52 @@ internal object DesktopWindowMode {
     /** F11: true full screen over the taskbar, and back to exactly the window it was before. */
     fun toggle() = setFullScreen(!_fullScreen.value)
 
+    @Volatile
+    private var keysInstalled = false
+
+    /** Keys whose release is swallowed because their press was handled here. */
+    private val swallowRelease = HashSet<Int>()
+
+    /**
+     * F11 and Esc for full screen, read from AWT before Compose sees anything — so they work
+     * whatever has focus, or when nothing in the window has focus at all (the Compose key handler
+     * only hears keys while something inside it is focused, which is why F11 used to miss).
+     */
+    fun installKeys() {
+        if (keysInstalled) return
+        keysInstalled = true
+        java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher { e ->
+            when (e.id) {
+                java.awt.event.KeyEvent.KEY_PRESSED -> when {
+                    e.keyCode == java.awt.event.KeyEvent.VK_F11 -> {
+                        // Held down, Windows repeats the press; only the first one toggles.
+                        if (swallowRelease.add(e.keyCode)) toggle()
+                        e.consume()
+                        true
+                    }
+                    e.keyCode == java.awt.event.KeyEvent.VK_ESCAPE && _fullScreen.value && !heldByVideo -> {
+                        swallowRelease.add(e.keyCode)
+                        setFullScreen(false)
+                        e.consume()
+                        true
+                    }
+                    else -> false
+                }
+                java.awt.event.KeyEvent.KEY_RELEASED -> {
+                    if (swallowRelease.remove(e.keyCode)) {
+                        e.consume()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                java.awt.event.KeyEvent.KEY_TYPED ->
+                    e.keyChar == '\u001B' && swallowRelease.contains(java.awt.event.KeyEvent.VK_ESCAPE)
+                else -> false
+            }
+        }
+    }
+
     /**
      * Maximize or restore, which is what the caption button in the corner does and what
      * double-clicking the title bar has always done.
