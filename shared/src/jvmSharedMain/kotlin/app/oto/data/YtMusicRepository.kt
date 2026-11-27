@@ -61,9 +61,34 @@ object YtMusicRepository {
      * it's empty and there's nothing more to fetch.
      */
     suspend fun home(): Result<HomeFeed> = call("home") {
+        // Signed out, YouTube builds Home from wherever the connection comes from, which leaves
+        // it full of one region's music. Home is built from the charts instead: what is being
+        // played most right now in the US, the UK, France and Spain, then worldwide.
+        val charts = coroutineScope {
+            HOME_CHARTS.map { (country, name) ->
+                async {
+                    runCatching { InnertubeParser.parseHome(Innertube.charts(country)) }
+                        .getOrDefault(emptyList())
+                        .filter { shelf -> shelf.items.isNotEmpty() && HOME_CHART_SHELF.containsMatchIn(shelf.title) }
+                        .map { shelf -> shelf.copy(title = "${shelf.title} · $name") }
+                }
+            }.awaitAll().flatten()
+        }
+        if (charts.isNotEmpty()) return@call HomeFeed(charts, null)
         val home = Innertube.browse("FEmusic_home")
         HomeFeed(InnertubeParser.parseHome(home), InnertubeParser.continuationToken(home))
     }
+
+    private val HOME_CHARTS = listOf(
+        "US" to "United States",
+        "GB" to "United Kingdom",
+        "FR" to "France",
+        "ES" to "Spain",
+        "ZZ" to "Global",
+    )
+
+    /** The song and video shelves of a charts page; its artist and genre rows stay off Home. */
+    private val HOME_CHART_SHELF = Regex("song|video|trending", RegexOption.IGNORE_CASE)
 
     /** Recently played is rendered independently, at the top of the Play page. */
     suspend fun homeRecentlyPlayed(): Result<HomeShelf?> = call("home:recent") { recentlyPlayed() }
@@ -73,10 +98,7 @@ object YtMusicRepository {
         shelvesOf(browseId)
     }
 
-    val HOME_SUPPLEMENT_BROWSE_IDS = listOf(
-        "FEmusic_new_releases",
-        "FEmusic_explore",
-    )
+    val HOME_SUPPLEMENT_BROWSE_IDS = emptyList<String>()
 
     /**
      * More Home shelves past [home]'s first page, following FEmusic_home's

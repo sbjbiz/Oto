@@ -74,6 +74,14 @@ class MusicVideoSelfTest {
     }
 
     @Test
+    fun homeIsBuiltFromTheCharts() {
+        if (System.getenv("OTO_NET_TEST") != "1") return
+        val home = runBlocking { YtMusicRepository.home() }.getOrThrow()
+        home.shelves.forEach { println("home shelf: ${it.title} (${it.items.size}): ${it.items.take(3).joinToString { i -> i.title }}") }
+        assertTrue(home.shelves.isNotEmpty(), "home came back empty")
+    }
+
+    @Test
     fun autoplayStationWorksWithoutAnAccount() {
         if (System.getenv("OTO_NET_TEST") != "1") return
         val station = runBlocking { DesktopSearchClient.radio("dQw4w9WgXcQ") }.getOrThrow()
