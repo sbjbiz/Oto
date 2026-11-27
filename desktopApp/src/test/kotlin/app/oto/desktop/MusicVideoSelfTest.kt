@@ -57,6 +57,12 @@ class MusicVideoSelfTest {
                 .filterIsInstance<SearchResult.Track>().map { it.song }.first { !it.isVideo }
         }
         val rick = song("Never Gonna Give You Up Rick Astley")
+        val next = runBlocking { app.oto.data.innertube.Innertube.next(rick.videoId) }.toString()
+        println("next: ${next.length} chars, wrappers=${Regex("playlistPanelVideoWrapperRenderer").findAll(next).count()}, counterpart=${next.contains("counterpart")}")
+        Regex("musicVideoType\":\"([A-Z_]+)").findAll(next).take(4).forEach { println("next type: ${it.groupValues[1]}") }
+        val vids = runBlocking { YtMusicRepository.search("Never Gonna Give You Up Rick Astley", SearchFilter.VIDEOS) }
+            .getOrNull().orEmpty().filterIsInstance<SearchResult.Track>().take(5)
+        vids.forEach { println("video row: ${it.song.videoId} '${it.song.title}' by '${it.song.artist}' video=${it.song.isVideo}") }
         val video = runBlocking { YtMusicRepository.resolveVideo(rick) }
         println("convert: '${rick.title}' (${rick.videoId}) -> ${video?.videoId} '${video?.title}'")
         assertTrue(video?.videoId == "dQw4w9WgXcQ", "expected the official video, got ${video?.videoId}")
