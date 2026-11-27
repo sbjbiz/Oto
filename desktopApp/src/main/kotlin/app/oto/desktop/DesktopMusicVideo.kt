@@ -185,8 +185,33 @@ private fun pickRendition(
 }
 
 /** Where the real picture is inside a decoded frame, once any baked-in black borders are cut off. */
-internal data class VideoCrop(val left: Int, val top: Int, val width: Int, val height: Int) {
+internal data class VideoCrop(
+    val left: Int,
+    val top: Int,
+    val width: Int,
+    val height: Int,
+    /** The frame size these are measured in; a different rendition scales them. */
+    val frameWidth: Int,
+    val frameHeight: Int,
+) {
     val aspect: Float get() = width.toFloat() / height
+
+    /** The same picture, in a frame of another size. */
+    fun scaledTo(newWidth: Int, newHeight: Int): VideoCrop {
+        if (newWidth == frameWidth && newHeight == frameHeight) return this
+        val sx = newWidth.toFloat() / frameWidth
+        val sy = newHeight.toFloat() / frameHeight
+        val l = (left * sx).roundToInt().coerceIn(0, newWidth - 1)
+        val t = (top * sy).roundToInt().coerceIn(0, newHeight - 1)
+        return VideoCrop(
+            left = l,
+            top = t,
+            width = (width * sx).roundToInt().coerceIn(1, newWidth - l),
+            height = (height * sy).roundToInt().coerceIn(1, newHeight - t),
+            frameWidth = newWidth,
+            frameHeight = newHeight,
+        )
+    }
 }
 
 /**
@@ -256,6 +281,10 @@ internal class DesktopMusicVideoSession(val videoId: String) {
             return
         }
         DesktopTrackLog.log("music video: playing ${stream.height}p ${stream.codec.ifBlank { stream.mimeType }} as ${decoder.width}x${decoder.height}")
+        // As BitChord does: the picture's shape from the stream itself, straight away, so the
+        // player sizes the video before its first frame. The border check below refines it.
+        _crop.value = _crop.value?.scaledTo(decoder.width, decoder.height)
+            ?: VideoCrop(0, 0, decoder.width, decoder.height, decoder.width, decoder.height)
         // A small pool of bitmaps, reused for the whole video: [AHEAD] decoded and waiting, the one
         // on screen, and the one before it (still being drawn while the next goes up).
         val info = ImageInfo.makeN32(decoder.width, decoder.height, ColorAlphaType.OPAQUE)
@@ -405,6 +434,8 @@ private class CropFinder(private val width: Int, private val height: Int) {
             top = if (trimmedY < height * 0.03) 0 else top,
             width = if (trimmedX < width * 0.03) width else w,
             height = if (trimmedY < height * 0.03) height else h,
+            frameWidth = width,
+            frameHeight = height,
         )
         return crop
     }
@@ -527,8 +558,10 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
             .graphicsLayer { this.alpha = alpha * presentationAlpha() },
     ) {
         val image = frameState.value ?: return@Canvas
-        val crop = cropState.value?.takeIf { it.left + it.width <= image.width && it.top + it.height <= image.height }
-            ?: VideoCrop(0, 0, image.width, image.height)
+        // The frame on screen can be from the rendition before a quality change, so the crop is
+        // scaled to whatever this frame's size is.
+        val crop = cropState.value?.scaledTo(image.width, image.height)
+            ?: VideoCrop(0, 0, image.width, image.height, image.width, image.height)
         // Only the picture itself, fitted to the view. The sleeve takes the picture's own shape,
         // so there it fills edge to edge; full screen keeps the whole picture in view.
         val clipAspect = crop.aspect

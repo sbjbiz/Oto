@@ -828,7 +828,8 @@ fun NowPlayingScreen(
     // the first frames have shown where the picture really is, then eased into place.
     val videoAspectRaw by PlayerPlatform.host.musicVideoAspect.collectAsStateWithLifecycle()
     val videoAspect by animateFloatAsState(
-        targetValue = videoAspectRaw.takeIf { it > 0.2f }?.coerceIn(0.5f, 2.6f) ?: (16f / 9f),
+        // BitChord's bounds: from square to 2.4:1.
+        targetValue = videoAspectRaw.takeIf { it > 0.2f }?.coerceIn(1f, 2.4f) ?: (16f / 9f),
         animationSpec = tween(durationMillis = 260),
         label = "musicVideoAspect",
     )
