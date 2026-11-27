@@ -402,7 +402,7 @@ fun LibraryGridPage(
                     NewShelfCard(
                         icon = OtoIcons.Plus,
                         label = stringResource(Res.string.new_playlist),
-                        subtitle = stringResource(Res.string.saved_to_youtube_music),
+                        subtitle = stringResource(Res.string.saved_on_this_pc),
                         onClick = onNewPlaylist,
                         modifier = Modifier.fillMaxWidth(),
                     )
