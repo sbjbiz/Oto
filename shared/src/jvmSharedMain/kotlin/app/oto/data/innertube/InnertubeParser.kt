@@ -1148,12 +1148,10 @@ object InnertubeParser {
             val primary = wrapper.o("primaryRenderer").o("playlistPanelVideoRenderer") ?: return@forEach
             val counterparts = wrapper.a("counterpart").orEmpty().filterIsInstance<JsonObject>()
                 .mapNotNull { it.o("counterpartRenderer").o("playlistPanelVideoRenderer") }
-            val other = if (primary.s("videoId") == videoId) {
-                counterparts.firstOrNull { it.fits() }
-            } else if (counterparts.any { it.s("videoId") == videoId }) {
-                primary.takeIf { it.fits() }
-            } else {
-                null
+            val other = when {
+                primary.s("videoId") == videoId -> counterparts.firstOrNull { it.fits() }
+                counterparts.any { it.s("videoId") == videoId } -> primary.takeIf { it.fits() }
+                else -> null
             } ?: return@forEach
             if (other.s("videoId") == videoId) return@forEach
             return panelSong(other)?.copy(isVideo = !wantAudio)
