@@ -79,6 +79,13 @@ class MusicVideoSelfTest {
         val raw = runBlocking { app.oto.data.innertube.Innertube.charts("US") }.toString()
         println("charts US: ${raw.length} chars; renderers: " + Regex("\"([a-zA-Z]+Renderer)\"").findAll(raw).map { it.groupValues[1] }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(25))
         Regex("\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]{3,60})\"").findAll(raw).take(15).forEach { println("charts title: ${it.groupValues[1]}") }
+        val parsed = app.oto.data.innertube.InnertubeParser.parseHome(kotlinx.serialization.json.Json.parseToJsonElement(raw).let { it as kotlinx.serialization.json.JsonObject })
+        parsed.forEach { println("charts shelf: '${it.title}' (${it.items.size}) ${it.items.take(2).joinToString { i -> i.title + "/" + i.videoId }}") }
+        Regex("musicCarouselShelfBasicHeaderRenderer\":\\{[^}]{0,400}?\"text\":\"([^\"]+)\"").findAll(raw).forEach { println("carousel header: ${it.groupValues[1]}") }
+        for (q in listOf("love for you pinkpantheress", "PinkPantheress")) {
+            val rows = runBlocking { YtMusicRepository.search(q, SearchFilter.SONGS) }.getOrNull().orEmpty()
+            println("search '$q': ${rows.size} rows: " + rows.take(6).joinToString { r -> (r as? SearchResult.Track)?.song?.let { "${it.title} – ${it.artist}" } ?: r::class.simpleName.orEmpty() })
+        }
         val home = runBlocking { YtMusicRepository.home() }.getOrThrow()
         home.shelves.forEach { println("home shelf: ${it.title} (${it.items.size}): ${it.items.take(3).joinToString { i -> i.title }}") }
         assertTrue(home.shelves.isNotEmpty(), "home came back empty")
