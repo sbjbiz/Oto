@@ -79,6 +79,8 @@ class MusicVideoSelfTest {
         val raw = runBlocking { app.oto.data.innertube.Innertube.charts("US") }.toString()
         println("charts US: ${raw.length} chars; renderers: " + Regex("\"([a-zA-Z]+Renderer)\"").findAll(raw).map { it.groupValues[1] }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(25))
         Regex("\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]{3,60})\"").findAll(raw).take(15).forEach { println("charts title: ${it.groupValues[1]}") }
+        val chartJson = kotlinx.serialization.json.Json.parseToJsonElement(raw) as kotlinx.serialization.json.JsonObject
+        app.oto.data.innertube.InnertubeParser.parseChartPlaylists(chartJson).forEach { println("chart playlist: ${it.first} -> ${it.second}") }
         val parsed = app.oto.data.innertube.InnertubeParser.parseHome(kotlinx.serialization.json.Json.parseToJsonElement(raw).let { it as kotlinx.serialization.json.JsonObject })
         parsed.forEach { println("charts shelf: '${it.title}' (${it.items.size}) ${it.items.take(2).joinToString { i -> i.title + "/" + i.videoId }}") }
         Regex("musicCarouselShelfBasicHeaderRenderer\":\\{[^}]{0,400}?\"text\":\"([^\"]+)\"").findAll(raw).forEach { println("carousel header: ${it.groupValues[1]}") }

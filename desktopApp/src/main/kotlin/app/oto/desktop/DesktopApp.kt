@@ -311,6 +311,8 @@ import kotlin.math.roundToInt
 import kotlin.system.exitProcess
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
@@ -414,6 +416,8 @@ private const val MAX_CONSECUTIVE_FAILURES = 5
 
 /** How long a failed track's message stays up before the next track is tried. */
 private const val FAILURE_SKIP_DELAY_MS = 1_500L
+private const val TASTE_SEEDS = 3
+private const val TASTE_ROWS = 20
 
 /** Used for tracking restart of the current song when previous button is pressed. */
 private const val BACK_RESTARTS_AFTER_MS = 10_000L
@@ -1878,6 +1882,31 @@ fun OtoDesktopApp() {
      * supplementary browse feeds, all asked for at once and laid down as each lands. Signed out
      * there is no Recently Played to ask for, which is also how the phone has it.
      */
+    suspend fun tasteShelves(): List<HomeShelf> {
+        val recent = DesktopListeningStats.summary(DesktopReplayPeriod.THIS_MONTH).songs
+        val played = recent.ifEmpty { DesktopListeningStats.summary(DesktopReplayPeriod.ALL_TIME).songs }
+        val seeds = played.sortedByDescending { it.plays }
+            .distinctBy { it.song.artist.lowercase() }
+            .take(TASTE_SEEDS)
+            .map { it.song }
+        val heard = played.mapTo(HashSet()) { it.song.videoId }
+        return coroutineScope {
+            seeds.map { seed ->
+                async {
+                    val station = DesktopSearchClient.radio(seed.videoId).getOrNull().orEmpty()
+                        .filter { it.videoId != seed.videoId }
+                        // Mostly new to the listener, with a few known songs left in.
+                        .sortedBy { it.videoId in heard }
+                        .take(TASTE_ROWS)
+                    HomeShelf(
+                        "Because you listened to ${seed.title}",
+                        station.map { ShelfItem(it.title, it.artist, it.thumbnailUrl, it.videoId, null) },
+                    )
+                }
+            }.awaitAll().filter { it.items.size >= 4 }
+        }
+    }
+
     fun loadHome() {
         if (!youtubeSourceEnabled) {
             homeState = UiState.Error("YouTube Music is disabled")
@@ -1915,6 +1944,15 @@ fun OtoDesktopApp() {
                             shelf?.let { publishHomeShelves(listOf(it), prepend = true) }
                         }
                         .onFailure { if (generation == homeGeneration) homeRecentsLoading = false }
+                }
+            }
+            // Once there is listening to go on, Home leads with music like it: a station from each
+            // of the most-played songs this month (all time until this month has some), above the
+            // charts a fresh install starts from.
+            launch {
+                val shelves = withContext(Dispatchers.IO) { tasteShelves() }
+                if (generation == homeGeneration && shelves.isNotEmpty()) {
+                    publishHomeShelves(shelves, prepend = true)
                 }
             }
             DesktopSearchClient.HOME_SUPPLEMENT_BROWSE_IDS.forEach { browseId ->
