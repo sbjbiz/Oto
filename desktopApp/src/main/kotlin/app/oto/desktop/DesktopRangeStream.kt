@@ -78,7 +78,9 @@ internal class DesktopRangeStream(
             pending.cancel(true)
             Thread.currentThread().interrupt()
             return false
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            val cause = (failure as? java.util.concurrent.ExecutionException)?.cause ?: failure
+            DesktopTrackLog.log("range read: failed at byte $start: ${cause.javaClass.simpleName}: ${cause.message}")
             return false
         }
         if (response.statusCode() !in 200..299) {

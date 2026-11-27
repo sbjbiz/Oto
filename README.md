@@ -29,7 +29,7 @@ Get the latest build from **Releases → v1**:
 ### Playback
 - **Search, browse and play** music from the catalogue: Home, Explore, Search and artist / album pages.
 - **Home that learns** — the same feed as the Android app (quick picks, new releases, moods), with stations built from what you play most at the top.
-- **Convert to video** — switch the playing song to its official music video, kept in step with the audio, with a video quality picker (Auto, plus every quality the video really offers) and full screen.
+- **Convert to video** — switch the playing song to its official music video, kept in step with the audio, with a video quality picker (Auto, plus every quality the video really offers: 2K, 4K and 8K when your graphics card decodes them) and full screen.
 - **Hi-Res lossless audio** — FLAC from addon sources you add yourself, with the standard catalogue as fallback.
 - **Gapless playback with crossfade**, adjustable 0–12 s.
 - **Automix [Beta]** — DJ-style transitions with beat-matching and tempo-stretching.

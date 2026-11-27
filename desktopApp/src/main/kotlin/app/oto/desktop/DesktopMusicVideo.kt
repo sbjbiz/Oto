@@ -52,7 +52,22 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import org.bytedeco.ffmpeg.avcodec.AVCodec
 import org.bytedeco.ffmpeg.avcodec.AVCodecContext
+import org.bytedeco.ffmpeg.avutil.AVBufferRef
+import org.bytedeco.ffmpeg.global.avcodec.AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX
+import org.bytedeco.ffmpeg.global.avcodec.avcodec_get_hw_config
+import org.bytedeco.ffmpeg.global.avutil.AV_HWDEVICE_TYPE_NONE
+import org.bytedeco.ffmpeg.global.avutil.av_buffer_ref
+import org.bytedeco.ffmpeg.global.avutil.av_buffer_unref
+import org.bytedeco.ffmpeg.global.avutil.av_hwdevice_ctx_create
+import org.bytedeco.ffmpeg.global.avutil.av_hwframe_transfer_data
+import org.bytedeco.ffmpeg.global.avutil.av_opt_set_int
+import org.bytedeco.ffmpeg.global.swscale.sws_alloc_context
+import org.bytedeco.ffmpeg.global.swscale.sws_scale_frame
+import org.bytedeco.ffmpeg.global.avutil.av_frame_get_buffer
+import org.bytedeco.ffmpeg.global.swscale.sws_init_context
+import org.bytedeco.ffmpeg.swscale.SwsFilter
 import org.bytedeco.ffmpeg.avcodec.AVPacket
 import org.bytedeco.ffmpeg.avformat.AVFormatContext
 import org.bytedeco.ffmpeg.avutil.AVDictionary
@@ -167,15 +182,21 @@ internal object DesktopMusicVideoQuality {
     fun active(height: Int?) = _state.update { it.copy(activeHeight = height) }
 }
 
-/** The steps Auto moves between, by the height the picture is drawn at. */
-private val AUTO_STEPS = listOf(360, 480, 720, 1080)
+/**
+ * The steps Auto moves between, by the height the picture is drawn at — up to 4K, as a browser
+ * does on a big screen in full screen. Above FullHD only while the card decodes; see
+ * [DesktopVideoHardware.maxHeight].
+ */
+private val AUTO_STEPS = listOf(360, 480, 720, 1080, 1440, 2160)
 
 /** The rendition to play: the held height where the video has it, otherwise Auto's pick. */
 private fun pickRendition(
-    renditions: List<StreamResolver.VideoOnly>,
+    all: List<StreamResolver.VideoOnly>,
     held: Int?,
     autoTarget: Int,
+    maxHeight: Int,
 ): StreamResolver.VideoOnly? {
+    val renditions = all.filter { it.height <= maxHeight }.ifEmpty { listOfNotNull(all.minByOrNull { it.height }) }
     if (renditions.isEmpty()) return null
     held?.let { wanted -> renditions.firstOrNull { it.height == wanted }?.let { return it } }
     val target = held ?: autoTarget
@@ -253,30 +274,40 @@ internal class DesktopMusicVideoSession(val videoId: String) {
                 DesktopTrackLog.log("music video: no picture stream for $videoId; showing the cover")
                 return@launch
             }
-            DesktopMusicVideoQuality.offered(renditions.map { it.height })
             // Wait for a view to say how big it is, so the first open is already the right one.
             wanted.first { it.isNotEmpty() }
             var highest = 0
             combine(
                 DesktopMusicVideoQuality.state.map { it.held }.distinctUntilChanged(),
                 wanted.map { sizes -> sizes.values.maxOrNull() ?: 0 },
-            ) { held, tallest ->
+                DesktopVideoHardware.state,
+            ) { held, tallest, _ ->
                 highest = maxOf(highest, tallest)
+                val maxHeight = DesktopVideoHardware.maxHeight
+                // Only what can be played smoothly here is on the quality menu.
+                DesktopMusicVideoQuality.offered(
+                    renditions.map { it.height }.filter { it <= maxHeight }.distinct().sortedDescending(),
+                )
                 val autoTarget = AUTO_STEPS.firstOrNull { it >= highest } ?: AUTO_STEPS.last()
-                pickRendition(renditions, held, autoTarget)
+                pickRendition(renditions, held, autoTarget, maxHeight)?.let { it to DesktopVideoHardware.useGpu }
             }
-                .distinctUntilChanged { old, new -> old?.url == new?.url }
-                .collectLatest { stream -> if (stream != null) play(stream) }
+                .distinctUntilChanged { old, new -> old?.first?.url == new?.first?.url && old?.second == new?.second }
+                .collectLatest { picked -> if (picked != null) play(picked.first, picked.second) }
         }
     }
 
     private class Decoded(val slot: Int, val ptsMs: Long, val generation: Long)
 
-    private suspend fun play(stream: StreamResolver.VideoOnly) {
+    private suspend fun play(stream: StreamResolver.VideoOnly, useGpu: Boolean) {
         DesktopMusicVideoQuality.active(stream.height)
         val decoder = DesktopVideoDecoder()
         val opened = withContext(Dispatchers.IO) {
-            decoder.open(stream.url, runCatching { StreamResolver.mediaHeadersFor(stream.url) }.getOrDefault(emptyMap()))
+            decoder.open(
+                stream.url,
+                runCatching { StreamResolver.mediaHeadersFor(stream.url) }.getOrDefault(emptyMap()),
+                useGpu = useGpu,
+                gpuHeightCap = DesktopVideoHardware.screenHeight,
+            )
         }
         if (opened.isFailure) {
             DesktopTrackLog.log("music video: ${opened.exceptionOrNull()?.message}")
@@ -303,16 +334,34 @@ internal class DesktopMusicVideoSession(val videoId: String) {
                 // Decoding: as far ahead as the pool allows, on its own thread.
                 launch(Dispatchers.IO) {
                     val pixels = ByteArray(decoder.width * decoder.height * 4)
+                    var reported = false
                     while (isActive) {
                         val seekTo = pendingSeek.getAndSet(-1L)
                         val gen = generation.get()
                         if (seekTo >= 0) decoder.seekTo(seekTo)
                         val slot = free.receive()
                         val pts = decoder.nextFrame(pixels)
+                        if (pts == DesktopVideoDecoder.GPU_FAILED) {
+                            // Picked up again on the processor: the state change re-opens it.
+                            free.send(slot)
+                            DesktopVideoHardware.disable("a picture could not be copied back from the GPU")
+                            delay(PAUSED_POLL_MS)
+                            continue
+                        }
                         if (pts == END_OF_STREAM) {
                             free.send(slot)
                             delay(PAUSED_POLL_MS)
                             continue
+                        }
+                        if (!reported) {
+                            reported = true
+                            val gpu = decoder.onGpu == true
+                            DesktopTrackLog.log("music video: ${stream.height}p decoding on the ${if (gpu) "GPU" else "processor"}")
+                            if (!gpu && stream.height > DesktopVideoHardware.SOFTWARE_MAX_HEIGHT) {
+                                DesktopVideoHardware.noHighRes(
+                                    "${stream.codec.ifBlank { stream.mimeType }} ${stream.height}p is not decoded by this GPU",
+                                )
+                            }
                         }
                         if (cropFinder.wants()) cropFinder.look(pixels)?.let { _crop.value = it }
                         pool[slot].installPixels(pixels)
@@ -469,11 +518,6 @@ internal object DesktopMusicVideoSessions {
     /** Stream URLs expire after a few hours; looked up again well before that. */
     private const val RENDITIONS_TTL_MS = 2L * 60 * 60 * 1000
 
-    /**
-     * Past FullHD the picture is decoded by the processor faster than it can be shown — 2K and 4K
-     * stuttered, and 4K could take the app down — so they are not offered.
-     */
-    private const val MAX_HEIGHT_OFFERED = 1080
 
     private val _aspect = MutableStateFlow(0f)
 
@@ -520,7 +564,7 @@ internal object DesktopMusicVideoSessions {
             runCatching { StreamResolver.resolveVideoOnly(videoId) }
                 .onFailure { DesktopTrackLog.log("music video: lookup failed for $videoId: ${it.message}") }
                 .getOrDefault(emptyList())
-        }.filter { it.height <= MAX_HEIGHT_OFFERED }
+        }.filter { it.height <= DesktopVideoHardware.GPU_MAX_HEIGHT }
         if (found.isNotEmpty()) lookedUp[videoId] = System.currentTimeMillis() to found
         return found
     }
@@ -619,6 +663,27 @@ internal class DesktopVideoDecoder {
     private var planes: PointerPointer<BytePointer>? = null
     private var strides: IntPointer? = null
     private var scalerFormat = -1
+
+    /** The card's decoding device, while this video decodes on it. */
+    private var gpuDevice: PointerPointer<AVBufferRef>? = null
+
+    /** The pixel format the card hands frames over in (a Direct3D surface); -1 on the processor. */
+    private var gpuFormat = -1
+
+    /** Where a frame from the card is copied back to, reused frame to frame. */
+    private var copied: AVFrame? = null
+
+    /** The finished BGRA picture, tightly packed, for the threaded scaler to write into. */
+    private var scaled: AVFrame? = null
+    private var frameScaling = true
+
+    /**
+     * Whether frames are really coming from the card: null before the first, false when FFmpeg
+     * fell back to the processor (a codec the card cannot decode).
+     */
+    @Volatile
+    var onGpu: Boolean? = null
+        private set
     private var sourceWidth = 0
     private var sourceHeight = 0
     private var streamIndex = -1
@@ -638,10 +703,19 @@ internal class DesktopVideoDecoder {
     private var readPacket: Read_packet_Pointer_BytePointer_int? = null
     private var seekPacket: Seek_Pointer_long_int? = null
 
-    fun open(url: String, headers: Map<String, String>): Result<Unit> {
+    /**
+     * Opens [url]; with [useGpu] the card decodes it where it can, and the picture is decoded to
+     * at most [gpuHeightCap] tall instead of FullHD.
+     */
+    fun open(
+        url: String,
+        headers: Map<String, String>,
+        useGpu: Boolean = false,
+        gpuHeightCap: Int = MAX_HEIGHT,
+    ): Result<Unit> {
         var last: Result<Unit> = Result.failure(IllegalStateException("could not open the video"))
         repeat(OPEN_ATTEMPTS) { attempt ->
-            last = openOnce(url, headers)
+            last = openOnce(url, headers, useGpu, gpuHeightCap)
             if (last.isSuccess) return last
             DesktopTrackLog.log("music video: open attempt ${attempt + 1} failed: ${last.exceptionOrNull()?.message}")
             Thread.sleep(400L * (attempt + 1))
@@ -684,7 +758,35 @@ internal class DesktopVideoDecoder {
         return context
     }
 
-    private fun openOnce(url: String, headers: Map<String, String>): Result<Unit> = runCatching {
+    /** The card's device for [decoder], when it can decode it there; null otherwise. */
+    private fun gpuFor(decoder: AVCodec): Pair<PointerPointer<AVBufferRef>, Int>? {
+        val type = DesktopVideoHardware.deviceType
+        if (type == AV_HWDEVICE_TYPE_NONE) return null
+        var pixelFormat = -1
+        var index = 0
+        while (index < MAX_HW_CONFIGS) {
+            val config = avcodec_get_hw_config(decoder, index++) ?: break
+            if (config.isNull) break
+            if ((config.methods() and AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0 && config.device_type() == type) {
+                pixelFormat = config.pix_fmt()
+                break
+            }
+        }
+        if (pixelFormat < 0) return null
+        val device = PointerPointer<AVBufferRef>(1)
+        if (av_hwdevice_ctx_create(device, type, null as String?, null as AVDictionary?, 0) < 0) {
+            device.deallocate()
+            return null
+        }
+        return device to pixelFormat
+    }
+
+    private fun openOnce(
+        url: String,
+        headers: Map<String, String>,
+        useGpu: Boolean,
+        gpuHeightCap: Int,
+    ): Result<Unit> = runCatching {
         DesktopAudioDecoder.ensureNetworkReady()
         val options = AVDictionary(null)
         val opened = windowedContext(url, headers)
@@ -700,13 +802,26 @@ internal class DesktopVideoDecoder {
         val decoder = avcodec_find_decoder(parameters.codec_id()) ?: error("no decoder for this video")
         val context = avcodec_alloc_context3(decoder)
         check(avcodec_parameters_to_context(context, parameters) >= 0) { "bad codec parameters" }
-        context.thread_count(0)
+        // With a device on the context, FFmpeg's own format choice takes the card's surfaces
+        // wherever the card can decode this codec, and quietly stays on the processor where not.
+        val gpu = if (useGpu) gpuFor(decoder) else null
+        if (gpu != null) {
+            context.hw_device_ctx(av_buffer_ref(gpu.first.get(AVBufferRef::class.java, 0)))
+            gpuDevice = gpu.first
+            gpuFormat = gpu.second
+            // The card does the work; one thread just feeds it.
+            context.thread_count(1)
+        } else {
+            gpuFormat = -1
+            context.thread_count(0)
+        }
         check(avcodec_open2(context, decoder, null as AVDictionary?) >= 0) { "decoder refused to open" }
         codec = context
         sourceWidth = context.width()
         sourceHeight = context.height()
         check(sourceWidth > 0 && sourceHeight > 0) { "the video has no size" }
-        val scale = minOf(1.0, MAX_HEIGHT.toDouble() / sourceHeight)
+        val cap = if (gpu != null) gpuHeightCap.coerceAtLeast(MAX_HEIGHT) else MAX_HEIGHT
+        val scale = minOf(1.0, cap.toDouble() / sourceHeight)
         width = ((sourceWidth * scale).toInt() / 2) * 2
         height = ((sourceHeight * scale).toInt() / 2) * 2
         val size = av_image_get_buffer_size(AV_PIX_FMT_BGRA, width, height, 1)
@@ -737,11 +852,36 @@ internal class DesktopVideoDecoder {
         val decoded = frame ?: return END_OF_STREAM
         while (true) {
             if (avcodec_receive_frame(context, decoded) == 0) {
-                val converter = scalerFor(decoded.format()) ?: return END_OF_STREAM
-                sws_scale(converter, decoded.data(), decoded.linesize(), 0, sourceHeight, planes, strides)
-                view?.let { pixels ->
-                    pixels.rewind()
-                    pixels.get(into, 0, minOf(into.size, width * height * 4))
+                var picture = decoded
+                if (gpuFormat >= 0 && decoded.format() == gpuFormat) {
+                    // Off the card into memory (NV12, or P010 for 10-bit), into the same frame
+                    // each time rather than a fresh allocation per picture.
+                    val target = copied ?: av_frame_alloc().also { copied = it }
+                    if (av_hwframe_transfer_data(target, decoded, 0) < 0) return GPU_FAILED
+                    picture = target
+                    onGpu = true
+                } else {
+                    onGpu = false
+                }
+                val converter = scalerFor(picture.format()) ?: return END_OF_STREAM
+                val bytes = minOf(into.size, width * height * 4)
+                // The frame call is the one that spreads over the cores (the plain call stays on
+                // one); it is used while it works, and dropped for good the first time it does not.
+                val out = if (frameScaling) scaledFrame() else null
+                if (out != null && sws_scale_frame(converter, out, picture) >= 0) {
+                    out.data(0).get(into, 0, bytes)
+                } else {
+                    if (out != null) {
+                        frameScaling = false
+                        DesktopTrackLog.log("music video: threaded scaling refused; scaling on one core")
+                        scalerFormat = -1
+                    }
+                    val plain = scalerFor(picture.format()) ?: return END_OF_STREAM
+                    sws_scale(plain, picture.data(), picture.linesize(), 0, sourceHeight, planes, strides)
+                    view?.let { pixels ->
+                        pixels.rewind()
+                        pixels.get(into, 0, bytes)
+                    }
                 }
                 val pts = decoded.best_effort_timestamp().takeIf { it != AV_NOPTS_VALUE } ?: decoded.pts()
                 return if (pts == AV_NOPTS_VALUE) 0L else pts * 1000L * timeBaseNum / timeBaseDen
@@ -756,7 +896,7 @@ internal class DesktopVideoDecoder {
         scaler?.let { if (pixelFormat == scalerFormat) return it }
         if (pixelFormat < 0) return null
         scaler?.let { sws_freeContext(it) }
-        val built = sws_getContext(
+        val built = threadedScaler(pixelFormat) ?: sws_getContext(
             sourceWidth, sourceHeight, pixelFormat,
             width, height, AV_PIX_FMT_BGRA,
             SWS_BILINEAR, null, null, null as DoublePointer?,
@@ -766,11 +906,61 @@ internal class DesktopVideoDecoder {
         return built
     }
 
+    /**
+     * The colour conversion and resize spread over the processor's cores: from a 4K picture it
+     * is the one big job left once the card has decoded it. Null where this FFmpeg cannot.
+     */
+    private fun threadedScaler(pixelFormat: Int): SwsContext? = runCatching {
+        val context = sws_alloc_context() ?: return@runCatching null
+        if (context.isNull) return@runCatching null
+        av_opt_set_int(context, "srcw", sourceWidth.toLong(), 0)
+        av_opt_set_int(context, "srch", sourceHeight.toLong(), 0)
+        av_opt_set_int(context, "src_format", pixelFormat.toLong(), 0)
+        av_opt_set_int(context, "dstw", width.toLong(), 0)
+        av_opt_set_int(context, "dsth", height.toLong(), 0)
+        av_opt_set_int(context, "dst_format", AV_PIX_FMT_BGRA.toLong(), 0)
+        av_opt_set_int(context, "sws_flags", SWS_BILINEAR.toLong(), 0)
+        av_opt_set_int(context, "threads", 0L, 0)
+        if (sws_init_context(context, null as SwsFilter?, null as SwsFilter?) < 0) {
+            sws_freeContext(context)
+            null
+        } else {
+            context
+        }
+    }.getOrNull()
+
+    private fun scaledFrame(): AVFrame? {
+        scaled?.let { return it }
+        val target = av_frame_alloc() ?: return null
+        target.format(AV_PIX_FMT_BGRA)
+        target.width(width)
+        target.height(height)
+        // Alignment 1: rows exactly width × 4 bytes apart, so the picture copies out in one go.
+        if (av_frame_get_buffer(target, 1) < 0 || target.linesize(0) != width * 4) {
+            av_frame_free(target)
+            frameScaling = false
+            return null
+        }
+        scaled = target
+        return target
+    }
+
     fun close() {
+        copied?.let { av_frame_free(it) }
+        copied = null
+        scaled?.let { av_frame_free(it) }
+        scaled = null
         frame?.let { av_frame_free(it) }
         packet?.let { av_packet_free(it) }
         scaler?.let { sws_freeContext(it) }
         codec?.let { avcodec_free_context(it) }
+        // The context held its own reference to the card's device; this drops the last one.
+        gpuDevice?.let {
+            av_buffer_unref(it)
+            it.deallocate()
+        }
+        gpuDevice = null
+        gpuFormat = -1
         format?.let { avformat_close_input(it) }
         avio?.let {
             av_free(it.buffer())
@@ -796,11 +986,15 @@ internal class DesktopVideoDecoder {
         streamIndex = -1
     }
 
-    private companion object {
-        const val MAX_HEIGHT = 1080
-        const val OPEN_ATTEMPTS = 3
-        const val IO_BUFFER_BYTES = 64 * 1024
-        const val SEEK_CUR = 1
-        const val SEEK_END = 2
+    companion object {
+        /** [nextFrame]: the card decoded a picture but it could not be copied back. */
+        const val GPU_FAILED = -2L
+
+        private const val MAX_HEIGHT = DesktopVideoHardware.SOFTWARE_MAX_HEIGHT
+        private const val MAX_HW_CONFIGS = 16
+        private const val OPEN_ATTEMPTS = 3
+        private const val IO_BUFFER_BYTES = 64 * 1024
+        private const val SEEK_CUR = 1
+        private const val SEEK_END = 2
     }
 }

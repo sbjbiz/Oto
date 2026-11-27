@@ -74,6 +74,52 @@ class MusicVideoSelfTest {
         }
     }
 
+    /**
+     * The GPU path, on whatever this machine has: frames come off the card, or — where it cannot
+     * decode the codec, as on a CI runner with no real GPU — FFmpeg stays on the processor. Either
+     * way the pictures must come out, and nothing may crash.
+     */
+    @Test
+    fun gpuDecodingDecodesOrFallsBackCleanly() {
+        if (System.getenv("OTO_NET_TEST") != "1") return
+        println("GPU decoding available: ${DesktopVideoHardware.available}")
+        val renditions = runBlocking { StreamResolver.resolveVideoOnly("dQw4w9WgXcQ") }
+        for (pick in listOfNotNull(
+            renditions.filter { it.height <= 1080 }.maxByOrNull { it.height },
+            renditions.maxByOrNull { it.height },
+        ).distinct()) {
+            val decoder = DesktopVideoDecoder()
+            decoder.open(
+                pick.url,
+                StreamResolver.mediaHeadersFor(pick.url),
+                useGpu = DesktopVideoHardware.available,
+                gpuHeightCap = 2160,
+            ).getOrThrow()
+            try {
+                val pixels = ByteArray(decoder.width * decoder.height * 4)
+                decoder.seekTo(30_000)
+                var frames = 0
+                var failedOnGpu = false
+                val started = System.nanoTime()
+                repeat(30) {
+                    when (decoder.nextFrame(pixels)) {
+                        END_OF_STREAM -> Unit
+                        DesktopVideoDecoder.GPU_FAILED -> failedOnGpu = true
+                        else -> frames++
+                    }
+                }
+                val ms = (System.nanoTime() - started) / 1_000_000
+                println(
+                    "gpu path: ${pick.height}p ${pick.codec.ifBlank { pick.mimeType }} -> ${decoder.width}x${decoder.height}, " +
+                        "$frames frames in ${ms}ms, on the GPU: ${decoder.onGpu}, copy-back failed: $failedOnGpu",
+                )
+                if (!failedOnGpu) assertTrue(frames >= 20, "decoded only $frames frames")
+            } finally {
+                decoder.close()
+            }
+        }
+    }
+
     @Test
     fun convertToVideoFindsTheOfficialVideoOnly() {
         if (System.getenv("OTO_NET_TEST") != "1") return
