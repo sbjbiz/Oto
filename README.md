@@ -28,6 +28,7 @@ Get the latest build from **Releases → v1**:
 
 ### Playback
 - **Search, browse and play** music from the catalogue: Home, Explore, Search and artist / album pages.
+- **Home that learns** — starts with what's trending in the US, UK, France and Spain, then adds stations built from what you play most.
 - **Convert to video** — switch the playing song to its official music video, kept in step with the audio, with a video quality picker (Auto, plus every quality the video really offers) and full screen.
 - **Hi-Res lossless audio** — FLAC from addon sources you add yourself, with the standard catalogue as fallback.
 - **Gapless playback with crossfade**, adjustable 0–12 s.
