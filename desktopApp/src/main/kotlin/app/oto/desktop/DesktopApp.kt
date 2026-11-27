@@ -45,6 +45,7 @@ import app.oto.ui.player.NowPlayingScreen
 import app.oto.ui.player.QueueSidePanel
 import app.oto.ui.player.PlayerBack
 import app.oto.ui.player.RepeatModes
+import app.oto.ui.player.VolumeSlider
 import app.oto.ui.player.rememberMixPulse
 import androidx.compose.runtime.SideEffect
 import app.oto.data.model.QueueTier
@@ -642,7 +643,19 @@ fun OtoDesktopApp() {
         )
     }
     var playbackSpeed by remember { mutableStateOf(persistence.string("playback_speed", "1.0").toFloatOrNull() ?: 1.0f) }
-    var volume by remember { mutableStateOf(persistence.string("volume", "1.0").toFloatOrNull()?.coerceIn(0.0f, 1.0f) ?: 1.0f) }
+    var volume by remember {
+        mutableStateOf(
+            persistence.string("volume", "1.0").toFloatOrNull()?.coerceIn(0.0f, DesktopVolumeBoost.maxVolume) ?: 1.0f,
+        )
+    }
+    // Volume boost turned off in Settings: back to at most 100%.
+    val volumeBoostOn by DesktopVolumeBoost.enabled.collectAsState()
+    LaunchedEffect(volumeBoostOn) {
+        if (!volumeBoostOn && volume > 1f) {
+            volume = 1f
+            persistence.saveString("volume", "1.0")
+        }
+    }
     var crossfadeSeconds by remember { mutableStateOf(persistence.string("crossfade_seconds", "0").toIntOrNull()?.coerceIn(0, 12) ?: 0) }
     var downloadQuality by remember { mutableStateOf(persistence.string("download_quality", "LOSSLESS")) }
     var trayIconEnabled by remember { mutableStateOf(persistence.boolean("tray_icon", true)) }
@@ -3741,9 +3754,11 @@ private fun DesktopTopBar(
                         modifier = Modifier.size(17.dp),
                     )
                     Spacer(Modifier.width(8.dp))
-                    DesktopThinSlider(
+                    val boost by DesktopVolumeBoost.enabled.collectAsState()
+                    VolumeSlider(
                         value = volume,
                         onValueChange = onVolumeChange,
+                        boost = boost,
                         idleHeight = 4.dp,
                         activeHeight = 8.dp,
                         modifier = Modifier.width(78.dp),
@@ -5534,6 +5549,12 @@ private fun DesktopSettingsScreen(
                         DesktopStrings["pipeline_output_device", "Output device"],
                         DesktopAudioDevices.label(),
                     ) { onOpenAudioOutput() }
+                    val boostOn by DesktopVolumeBoost.enabled.collectAsState()
+                    SettingsToggle(
+                        "Volume boost",
+                        "Lets the volume go up to 600%, with Voice boost and Bass boost under the player's volume bar",
+                        boostOn,
+                    ) { DesktopVolumeBoost.setEnabled(it) }
                 }
             }
             if (section == DesktopSettingsSection.OUTPUT_PRECISION) item {

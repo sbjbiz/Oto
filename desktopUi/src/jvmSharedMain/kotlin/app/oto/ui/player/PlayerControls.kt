@@ -69,6 +69,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -506,32 +507,46 @@ internal fun VolumeRow(
     onValueChange: (Float) -> Unit,
     onValueChangeFinished: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.AutoMirrored.Rounded.VolumeDown,
-            contentDescription = null,
-            tint = LocalPlayerTint.current.copy(alpha = 0.5f),
-            modifier = Modifier.size(20.dp),
-        )
-        Spacer(Modifier.width(10.dp))
-        ThinSlider(
-            value = value(),
-            onValueChange = onValueChange,
-            onValueChangeFinished = onValueChangeFinished,
-            idleHeight = 6.dp,
-            activeHeight = 10.dp,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(10.dp))
-        Icon(
-            Icons.AutoMirrored.Rounded.VolumeUp,
-            contentDescription = null,
-            tint = LocalPlayerTint.current.copy(alpha = 0.5f),
-            modifier = Modifier.size(20.dp),
-        )
+    val host = PlayerPlatform.host
+    val boost by host.volumeBoost.collectAsState()
+    val tone by host.boostTone.collectAsState()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Rounded.VolumeDown,
+                contentDescription = null,
+                tint = LocalPlayerTint.current.copy(alpha = 0.5f),
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            VolumeSlider(
+                value = value(),
+                onValueChange = onValueChange,
+                onValueChangeFinished = onValueChangeFinished,
+                boost = boost,
+                idleHeight = 6.dp,
+                activeHeight = 10.dp,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                Icons.AutoMirrored.Rounded.VolumeUp,
+                contentDescription = null,
+                tint = LocalPlayerTint.current.copy(alpha = 0.5f),
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        // Volume boost's sounds, only while it is on in Settings.
+        AnimatedVisibility(visible = boost) {
+            BoostToneRow(
+                selected = tone,
+                onSelect = host::setBoostTone,
+                tint = LocalPlayerTint.current,
+            )
+        }
     }
 }
 

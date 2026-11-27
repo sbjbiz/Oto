@@ -29,7 +29,13 @@ import kotlin.math.roundToInt
 import org.jetbrains.compose.resources.painterResource
 
 fun main() {
+    // Before anything loads FFmpeg's bindings; the packaged app also passes it on the command
+    // line. See desktopApp/build.gradle.kts for why the limit has to go.
+    if (System.getProperty("org.bytedeco.javacpp.maxPhysicalBytes") == null) {
+        System.setProperty("org.bytedeco.javacpp.maxPhysicalBytes", "0")
+    }
     DesktopWindowVisibility.install()
+    DesktopMemory.startReporting()
     // The player is the phone's, from the shared UI module; this is what it reads underneath.
     PlayerPlatform.install(DesktopPlayerHost)
     app.oto.ui.AppUi.install(DesktopAppUiHost)

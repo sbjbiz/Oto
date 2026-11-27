@@ -636,11 +636,12 @@ void remember_played_and_reset_locked() {
  * Moves the stream to wherever the request resolves now. What was queued on the old endpoint is
  * dropped — a fifth of a second at most — and only what was actually heard is counted as played.
  */
-void reroute_locked() {
+void reroute_locked(bool force = false) {
     g_audio_reroute = false;
     if (g_audio_channels == 0) return;
     IMMDevice* device = resolve_device_locked(g_audio_wanted);
-    if (device != nullptr && g_audio_client != nullptr && endpoint_id(device) == g_audio_endpoint_id) {
+    // [force] reopens even the same endpoint: one that has stopped taking audio without saying so.
+    if (!force && device != nullptr && g_audio_client != nullptr && endpoint_id(device) == g_audio_endpoint_id) {
         device->Release();
         return;
     }
@@ -686,6 +687,9 @@ int open_audio(const std::wstring& wanted, int sample_rate, int channels, int by
     return static_cast<int>(g_audio_buffer_frames * g_audio_channels * g_audio_bytes_per_sample);
 }
 
+constexpr ULONGLONG kAudioStallMs = 2'000;
+constexpr ULONGLONG kAudioDrainMaxMs = 5'000;
+
 int write_audio(const float* samples, int sample_count, float gain) {
     if (samples == nullptr || sample_count <= 0) return 0;
     std::unique_lock<std::mutex> guard(g_audio_mutex);
@@ -694,6 +698,11 @@ int write_audio(const float* samples, int sample_count, float gain) {
 
     const UINT32 total_frames = static_cast<UINT32>(sample_count) / g_audio_channels;
     UINT32 frame_at = 0;
+    // A device whose buffer stays full has stopped playing (a driver that hung after sleep, a
+    // headset that went away without telling Windows). Waiting on it for good wedged the player
+    // until Oto was restarted; so it is reopened once, and failing that this block is let go.
+    ULONGLONG stalled_since = 0;
+    bool reopened = false;
     while (frame_at < total_frames) {
         if (g_audio_reroute || g_audio_client == nullptr) reroute_locked();
         if (g_audio_client == nullptr) {
@@ -721,11 +730,28 @@ int write_audio(const float* samples, int sample_count, float gain) {
         }
         const UINT32 available = padding < g_audio_buffer_frames ? g_audio_buffer_frames - padding : 0;
         if (available == 0) {
+            const ULONGLONG now = GetTickCount64();
+            if (stalled_since == 0) {
+                stalled_since = now;
+            } else if (now - stalled_since >= kAudioStallMs) {
+                if (!reopened) {
+                    reopened = true;
+                    stalled_since = 0;
+                    g_audio_error = L"The audio device stopped taking sound; reopened it";
+                    reroute_locked(true);
+                    continue;
+                }
+                g_audio_error = L"The audio device stopped taking sound";
+                g_audio_played_offset += total_frames - frame_at;
+                frame_at = total_frames;
+                break;
+            }
             guard.unlock();
             Sleep(2);
             guard.lock();
             continue;
         }
+        stalled_since = 0;
         const UINT32 frames = std::min(available, total_frames - frame_at);
         BYTE* target = nullptr;
         status = g_audio_render->GetBuffer(frames, &target);
@@ -934,13 +960,25 @@ Java_app_oto_desktop_DesktopWindowsAudio_nativeFlush(JNIEnv*, jclass) {
 
 JNIEXPORT void JNICALL
 Java_app_oto_desktop_DesktopWindowsAudio_nativeDrain(JNIEnv*, jclass) {
+    // Bounded like the write: what is queued is a fifth of a second, so a drain that has not
+    // moved in a while is a device that has stopped, not one still playing.
+    UINT32 last_padding = 0;
+    ULONGLONG unmoved_since = 0;
+    const ULONGLONG started = GetTickCount64();
     while (true) {
         {
             std::lock_guard<std::mutex> guard(g_audio_mutex);
             ComScope com;
-            if (g_audio_client == nullptr) return;
+            if (g_audio_client == nullptr || !g_audio_started) return;
             UINT32 padding = 0;
             if (FAILED(g_audio_client->GetCurrentPadding(&padding)) || padding == 0) return;
+            const ULONGLONG now = GetTickCount64();
+            if (padding != last_padding) {
+                last_padding = padding;
+                unmoved_since = now;
+            } else if (now - unmoved_since >= kAudioStallMs || now - started >= kAudioDrainMaxMs) {
+                return;
+            }
         }
         Sleep(2);
     }

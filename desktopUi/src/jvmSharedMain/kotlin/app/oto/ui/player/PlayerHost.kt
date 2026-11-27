@@ -78,6 +78,16 @@ interface PlayerHost {
     /** Puts the window into full screen for a music video, or takes it back out. */
     fun setVideoFullscreen(on: Boolean) {}
 
+    /**
+     * Volume boost, from Settings: while true the volume bars go past 100% to [VOLUME_BOOST_MAX]
+     * and the player offers its boost sounds under the bar.
+     */
+    val volumeBoost: StateFlow<Boolean> get() = NoBoost
+
+    /** The boost sound in force: one of [BoostTone]'s keys. */
+    val boostTone: StateFlow<String> get() = NoBoostTone
+
+    fun setBoostTone(key: String) {}
 
     suspend fun translateLyrics(
         trackId: String,
@@ -270,6 +280,18 @@ const val MUSIC_VIDEO_SCHEME = "otovideo:"
 
 private val NoVideoQuality = kotlinx.coroutines.flow.MutableStateFlow(MusicVideoQualityUi())
 internal val NoVideoAspect: StateFlow<Float> = kotlinx.coroutines.flow.MutableStateFlow(0f)
+private val NoBoost: StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(false)
+private val NoBoostTone: StateFlow<String> = kotlinx.coroutines.flow.MutableStateFlow(BoostTone.DEFAULT)
+
+/** The loudest a boosted volume bar goes: 600%. */
+const val VOLUME_BOOST_MAX = 6f
+
+/** The sounds under a boosted volume bar, by the keys [PlayerHost.boostTone] uses. */
+object BoostTone {
+    const val DEFAULT = "default"
+    const val VOICE = "voice"
+    const val BASS = "bass"
+}
 
 /** What the video quality box and drawer draw. */
 data class MusicVideoQualityUi(

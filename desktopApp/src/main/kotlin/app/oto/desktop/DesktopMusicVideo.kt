@@ -239,6 +239,9 @@ internal class DesktopMusicVideoSession(val videoId: String) {
     internal var holders = 0
     internal var closing: Job? = null
 
+    /** The shape watcher [DesktopMusicVideoSessions] runs for this session; ends with it. */
+    internal var cropWatch: Job? = null
+
     /** How tall [holder] draws the picture, in pixels; 0 when it no longer does. */
     fun want(holder: Any, heightPx: Int) =
         wanted.update { if (heightPx <= 0) it - holder else it + (holder to heightPx) }
@@ -385,7 +388,14 @@ internal class DesktopMusicVideoSession(val videoId: String) {
         }
     }
 
-    internal fun stop() = scope.cancel()
+    internal fun stop() {
+        scope.cancel()
+        // The watcher lived in the registry's scope and held this session — and its last frame —
+        // for the rest of the run: one picture's worth of memory kept for every video ever played.
+        cropWatch?.cancel()
+        cropWatch = null
+        _frame.value = null
+    }
 }
 
 /**
@@ -467,6 +477,9 @@ internal object DesktopMusicVideoSessions {
 
     private val _aspect = MutableStateFlow(0f)
 
+    /** How many videos are open right now, for the memory line in the log. */
+    val openCount: Int get() = synchronized(open) { open.size }
+
     /** The playing video's picture shape, borders cut off; 0 until it is known. */
     val aspect: StateFlow<Float> = _aspect
 
@@ -474,7 +487,8 @@ internal object DesktopMusicVideoSessions {
         val session = open.getOrPut(videoId) {
             _aspect.value = 0f
             DesktopMusicVideoSession(videoId).also { created ->
-                lingering.launch { created.crop.collect { crop -> if (crop != null) _aspect.value = crop.aspect } }
+                val crops = created.crop
+                created.cropWatch = lingering.launch { crops.collect { crop -> if (crop != null) _aspect.value = crop.aspect } }
             }
         }
         session.holders++

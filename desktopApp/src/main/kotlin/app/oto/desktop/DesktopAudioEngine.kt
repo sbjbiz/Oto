@@ -209,6 +209,7 @@ class DesktopPlaybackEngine(
 
     fun load(song: Song, playWhenReady: Boolean = true, startAtMs: Long = 0L) {
         retryingSongId = null
+        resumes = 0
         loadInternal(
             song,
             playWhenReady,
@@ -468,7 +469,8 @@ class DesktopPlaybackEngine(
     }
 
     fun setVolume(value: Float) {
-        volume = value.coerceIn(0f, 1f)
+        // Up to 600% only while Volume boost is on; the sink's limiter keeps a boost clean.
+        volume = value.coerceIn(0f, DesktopVolumeBoost.maxVolume)
         sink.gain = volume
         _state.update { it.copy(volume = volume) }
     }
@@ -829,6 +831,7 @@ class DesktopPlaybackEngine(
                 publishPosition(track)
                 return
             }
+            if (resumeIfCutShort(track)) return
             finishTrack(track)
             return
         }
@@ -1006,6 +1009,11 @@ class DesktopPlaybackEngine(
                 currentReadCount = 0
                 return null
             }
+            // The decoder is behind: back to the loop, which keeps taking commands meanwhile.
+            if (sourceReadCount == 0) {
+                currentReadCount = 0
+                return source
+            }
             tempo.speed = track.tempoRate.toFloat()
             tempo.push(source, sourceReadCount)
         }
@@ -1034,6 +1042,7 @@ class DesktopPlaybackEngine(
         ).also { track.tempo = it }
         while (tempo.available < wanted) {
             val source = readSource(track) ?: break
+            if (sourceReadCount == 0) break
             tempo.speed = track.tempoRate.toFloat()
             tempo.push(source, sourceReadCount)
         }
@@ -1110,6 +1119,38 @@ class DesktopPlaybackEngine(
     }
 
     /** End of a track. */
+    /** How many times the playing song has been opened again after being cut short; see [resumeIfCutShort]. */
+    @Volatile private var resumes = 0
+
+    /**
+     * A streamed track that stopped well before its end — its decoder failed or stalled, or the
+     * connection dropped and the stream simply ran out — is opened again from where it stopped,
+     * on a fresh link, instead of being taken for finished. At most [MAX_RESUMES] times per play.
+     */
+    private fun resumeIfCutShort(track: Track): Boolean {
+        if (resumes >= MAX_RESUMES) return false
+        if (!track.stream.url.startsWith("http", ignoreCase = true)) return false
+        val heardMs = _state.value.positionMs
+        val durationMs = track.decoder.durationUs?.div(1_000)
+        val early = durationMs != null && durationMs > 0 && heardMs < durationMs - CUT_SHORT_MARGIN_MS
+        if (!track.decoder.failed && !early) return false
+        resumes++
+        val song = track.song
+        DesktopTrackLog.log(
+            "'${song.title}' stopped at ${heardMs / 1_000}s" +
+                (durationMs?.let { " of ${it / 1_000}s" } ?: "") +
+                (if (track.decoder.failed) " (decoder failed)" else " (stream ran out)") +
+                "; opening it again from there",
+        )
+        current = null
+        track.decoder.close()
+        if (track.stream.sourceId == YOUTUBE_SOURCE_ID) StreamResolver.forgetUrl(song.videoId)
+        scope.launch {
+            loadInternal(song, playWhenReady = true, excludedSourceId = refusedSources[song.videoId], startAtMs = heardMs)
+        }
+        return true
+    }
+
     private fun finishTrack(track: Track) {
         if (upcoming != null) {
             promoteUpcoming()
@@ -1910,6 +1951,12 @@ class DesktopPlaybackEngine(
     companion object {
         /** How many times a lossy substitute is asked to be beaten before the question is closed. */
         private const val LOSSLESS_FOLLOW_UPS = 2
+
+        /** Times one play of a song may be opened again after being cut short. */
+        private const val MAX_RESUMES = 2
+
+        /** Ending more than this before the stated duration is being cut short, not finishing. */
+        private const val CUT_SHORT_MARGIN_MS = 8_000L
 
         /** Avoid a decoder seek for sub-tick drift while an upgraded rendition is opening. */
         private const val UPGRADE_RESEEK_THRESHOLD_MS = 250L

@@ -149,18 +149,34 @@ internal class DesktopAudioSink {
     val bufferBytes: Int
         get() = if (windowsOutput) windowsBufferBytes else runCatching { line?.bufferSize ?: 0 }.getOrDefault(0)
 
+    /** Volume past 100% and the boost sounds; see [DesktopVolumeBoost]. Playback thread only. */
+    private val boost = DesktopBoostProcessor()
+    private var boosting = false
+
     /** Writes [count] interleaved samples, blocking until the device takes them. */
     fun write(samples: FloatArray, count: Int): Int {
+        var source = samples
+        var volume = gain
+        val tone = DesktopVolumeBoost.tone.value
+        if (count > 0 && boost.needed(volume, tone)) {
+            if (!boosting) boost.reset()
+            boosting = true
+            source = boost.process(samples, count, format.channels, format.sampleRate, volume, tone)
+            // Already scaled and kept under full scale by the boost's limiter.
+            volume = 1f
+        } else {
+            boosting = false
+        }
         if (windowsOutput) {
-            val written = DesktopWindowsAudio.write(samples, count, gain)
-            diagnose(samples, count, written)
+            val written = DesktopWindowsAudio.write(source, count, volume)
+            diagnose(source, count, written)
             return written
         }
         val target = line ?: return 0
         if (count <= 0) return 0
-        val bytes = convert(samples, count)
+        val bytes = convert(source, count, volume)
         val written = target.write(bytes, 0, count * format.bytesPerSample)
-        diagnose(samples, count, written)
+        diagnose(source, count, written)
         return written
     }
 
@@ -179,9 +195,8 @@ internal class DesktopAudioSink {
     }
 
     /** Floats to whatever the device accepted, scaled by [gain]. */
-    private fun convert(samples: FloatArray, count: Int): ByteArray {
+    private fun convert(samples: FloatArray, count: Int, volume: Float): ByteArray {
         val current = format
-        val volume = gain
         val bytes = count * current.bytesPerSample
         if (staging.size < bytes) staging = ByteArray(bytes)
         val out = staging

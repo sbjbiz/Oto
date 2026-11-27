@@ -30,8 +30,20 @@ internal object DesktopWindowsAudio {
         bytes
     }
 
-    fun write(samples: FloatArray, count: Int, gain: Float): Int =
-        if (available) nativeWrite(samples, count, gain) else 0
+    fun write(samples: FloatArray, count: Int, gain: Float): Int {
+        if (!available) return 0
+        val from = System.nanoTime()
+        val written = nativeWrite(samples, count, gain)
+        // A block is a few milliseconds of sound; one that took seconds met a device that had
+        // stopped playing, which the native side reopens (or gives up on) after two seconds.
+        val tookMs = (System.nanoTime() - from) / 1_000_000
+        if (tookMs >= SLOW_WRITE_LOG_MS) {
+            DesktopTrackLog.log("audio output: one write took ${tookMs}ms — ${runCatching { nativeLastError() }.getOrDefault("")}")
+        }
+        return written
+    }
+
+    private const val SLOW_WRITE_LOG_MS = 1_500L
 
     fun framesPlayed(): Long = if (available) nativeFramesPlayed() else 0L
 

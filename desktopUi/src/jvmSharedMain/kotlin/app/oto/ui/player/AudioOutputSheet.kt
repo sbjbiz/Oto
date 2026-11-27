@@ -435,6 +435,7 @@ private fun OutputRow(
 private fun VolumeRow(routeKey: Any) {
     val system = PlayerPlatform.host.volume
     val systemLevel by system.level.collectAsStateWithLifecycle()
+    val boost by PlayerPlatform.host.volumeBoost.collectAsStateWithLifecycle()
     var level by remember(system) { mutableFloatStateOf(systemLevel) }
     var dragging by remember { mutableStateOf(false) }
 
@@ -467,7 +468,7 @@ private fun VolumeRow(routeKey: Any) {
             modifier = Modifier.size(20.dp),
         )
         Spacer(Modifier.width(12.dp))
-        ThinSlider(
+        VolumeSlider(
             value = level,
             onValueChange = {
                 dragging = true
@@ -475,6 +476,7 @@ private fun VolumeRow(routeKey: Any) {
                 system.set(it)
             },
             onValueChangeFinished = { dragging = false },
+            boost = boost,
             idleHeight = 6.dp,
             activeHeight = 10.dp,
             modifier = Modifier.weight(1f),

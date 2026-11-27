@@ -64,9 +64,23 @@ internal class DesktopRangeStream(
             .header("Accept-Encoding", "identity")
         headers.forEach { (name, value) -> runCatching { request.header(name, value) } }
 
-        val response = runCatching {
-            client.send(request.GET().build(), HttpResponse.BodyHandlers.ofByteArray())
-        }.getOrNull() ?: return false
+        // The request's own timeout covers only the wait for the headers. A connection that
+        // freezes mid-body — sleep and wake, a Wi-Fi switch, a VPN reconnecting — would otherwise
+        // hold this read, and the track, forever; this bounds the whole window instead.
+        val pending = client.sendAsync(request.GET().build(), HttpResponse.BodyHandlers.ofByteArray())
+        val response = try {
+            pending.get(WINDOW_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            pending.cancel(true)
+            DesktopTrackLog.log("range read: no data for ${WINDOW_TIMEOUT_SECONDS}s at byte $start; giving up on this link")
+            return false
+        } catch (_: InterruptedException) {
+            pending.cancel(true)
+            Thread.currentThread().interrupt()
+            return false
+        } catch (_: Exception) {
+            return false
+        }
         if (response.statusCode() !in 200..299) {
             // A URL cleared before playback has been refused mid-track: tell the resolver, as the
             // phone's ChunkedDataSource does, so it forgets it and benches the client that minted it.
@@ -93,6 +107,9 @@ internal class DesktopRangeStream(
     private companion object {
         /** Comfortably inside what Google will serve. */
         const val DEFAULT_WINDOW = 512 * 1024
+
+        /** A whole 512 KiB window takes well under a second on any working connection. */
+        const val WINDOW_TIMEOUT_SECONDS = 20L
 
         val client: HttpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)

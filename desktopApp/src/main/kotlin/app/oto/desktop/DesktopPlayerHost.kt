@@ -86,9 +86,15 @@ internal object DesktopPlayerHost : PlayerHost {
 
     override val volume: SystemVolume = object : SystemVolume {
         override val level: StateFlow<Float> = volumeLevel.asStateFlow()
-        override fun set(level: Float) = onVolumeChange(level.coerceIn(0f, 1f))
+        override fun set(level: Float) = onVolumeChange(level.coerceIn(0f, DesktopVolumeBoost.maxVolume))
         override fun refresh() = Unit
     }
+
+    override val volumeBoost: StateFlow<Boolean> get() = DesktopVolumeBoost.enabled
+
+    override val boostTone: StateFlow<String> get() = DesktopVolumeBoost.toneKey
+
+    override fun setBoostTone(key: String) = DesktopVolumeBoost.setTone(key)
 
     /** The last list handed to the drawer, for turning a row's id back into a mixer. */
     @Volatile

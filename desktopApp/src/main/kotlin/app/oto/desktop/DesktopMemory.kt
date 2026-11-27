@@ -23,6 +23,39 @@ internal object DesktopMemory {
     /** Long enough that a quick minimize-and-restore never pays for a trim. */
     private const val SETTLE_MS = 8_000L
 
+    /** How often the memory line goes into oto.log. */
+    private const val REPORT_EVERY_MS = 5 * 60_000L
+
+    /**
+     * A line in oto.log every few minutes: the heap, the whole process as Windows counts it, and
+     * the native side FFmpeg's bindings track — so memory that climbs over a long session shows
+     * when it started and where it went.
+     */
+    fun startReporting() {
+        scope.launch {
+            delay(60_000L)
+            while (true) {
+                report()
+                delay(REPORT_EVERY_MS)
+            }
+        }
+    }
+
+    private fun report() {
+        runCatching {
+            val mb = 1024L * 1024L
+            val runtime = Runtime.getRuntime()
+            val heapUsed = (runtime.totalMemory() - runtime.freeMemory()) / mb
+            val heapMax = runtime.maxMemory() / mb
+            val process = org.bytedeco.javacpp.Pointer.physicalBytes() / mb
+            val native = org.bytedeco.javacpp.Pointer.totalBytes() / mb
+            DesktopTrackLog.log(
+                "memory: process ${process}MB · heap ${heapUsed}/${heapMax}MB · " +
+                    "native tracked ${native}MB · videos open ${DesktopMusicVideoSessions.openCount}",
+            )
+        }
+    }
+
     @Synchronized
     fun onWindowShown(shown: Boolean) {
         pending?.cancel()

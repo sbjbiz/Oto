@@ -424,6 +424,10 @@ compose.desktop {
         // Give heap back to Windows after a collection instead of keeping it reserved, and share
         // identical strings (titles, artist names, JSON keys) rather than holding copies.
         jvmArgs("-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=25", "-XX:+UseStringDeduplication")
+        // FFmpeg's bindings (JavaCPP) refuse every new decoder once the whole process passes four
+        // times the heap limit — 2 GB here — whatever the machine has. Hitting it after a long
+        // session of music videos is what left Oto unable to play anything until restarted.
+        jvmArgs("-Dorg.bytedeco.javacpp.maxPhysicalBytes=0")
         jvmArgs("-Doto.version=$appVersion")
         if (desktopModuleIndexUrl.isNotBlank()) {
             jvmArgs("-Doto.module.index=$desktopModuleIndexUrl")

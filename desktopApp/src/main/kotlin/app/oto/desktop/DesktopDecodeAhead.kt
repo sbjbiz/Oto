@@ -1,5 +1,6 @@
 package app.oto.desktop
 
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -27,6 +28,12 @@ internal interface DesktopSampleSource {
  *
  * Only this thread touches [source] once constructed — seeks and the close are handed to it — so
  * the native decoder never sees two threads.
+ *
+ * The audio thread never waits on this one for long: a read that finds nothing hands back an
+ * empty block after [READ_WAIT_MS], so it can get back to its commands, and a decoder that has
+ * produced nothing for [STALL_MS] — or died — ends the track as [failed]. Waiting without a limit
+ * is how one frozen download, or a decoder killed by a memory error, left the whole player
+ * unable to play anything until Oto was restarted.
  */
 internal class DesktopDecodeAhead(
     private val source: DesktopSampleSource,
@@ -36,6 +43,8 @@ internal class DesktopDecodeAhead(
     /** How far ahead to decode, in samples across all channels. */
     private val aheadSamples: Int = outputFormat.sampleRate * outputFormat.channels * AHEAD_SECONDS,
     name: String = "Oto-Decode",
+    /** Nothing decoded for this long, with nothing ending it, is a stuck decoder. */
+    private val stallMs: Long = STALL_MS,
 ) {
 
     private val lock = ReentrantLock()
@@ -58,6 +67,14 @@ internal class DesktopDecodeAhead(
     var sampleCount: Int = 0
         private set
 
+    /** Whether the track ended because the decoder failed or stalled, not because it was over. */
+    @Volatile
+    var failed: Boolean = false
+        private set
+
+    /** When the worker last produced anything, or was told to start afresh. */
+    private var progressAt = System.nanoTime()
+
     private val worker = Thread(::decodeLoop, name).apply {
         isDaemon = true
         // Above the UI, below the audio thread itself.
@@ -65,13 +82,29 @@ internal class DesktopDecodeAhead(
         start()
     }
 
-    /** The next decoded block, waiting for the decoder only if it has fallen behind. */
+    /**
+     * The next decoded block, waiting for the decoder only if it has fallen behind; an empty
+     * block (with [sampleCount] 0) when it is still behind after a short wait; null at the end.
+     */
     fun readSamples(): FloatArray? = lock.withLock {
         if (queue.isEmpty() && !ended && !closed) {
             val waitedFrom = System.nanoTime()
-            while (queue.isEmpty() && !ended && !closed) ready.await()
+            var left = TimeUnit.MILLISECONDS.toNanos(READ_WAIT_MS)
+            while (queue.isEmpty() && !ended && !closed && left > 0) left = ready.awaitNanos(left)
             val waitedMs = (System.nanoTime() - waitedFrom) / 1_000_000
-            if (started && waitedMs >= STARVED_LOG_MS) {
+            if (queue.isEmpty() && !ended && !closed) {
+                val stalledMs = (System.nanoTime() - progressAt) / 1_000_000
+                if (stalledMs < stallMs) {
+                    sampleCount = 0
+                    return EMPTY
+                }
+                DesktopTrackLog.log("decode-ahead: the decoder has produced nothing for ${stalledMs / 1_000}s; ending the track")
+                failed = true
+                ended = true
+                // Whatever the stuck read eventually brings back belongs to no one.
+                generation++
+                wake.signal()
+            } else if (started && waitedMs >= STARVED_LOG_MS && queue.isNotEmpty()) {
                 DesktopTrackLog.log("decode-ahead ran dry: the audio thread waited ${waitedMs}ms for the decoder")
             }
         }
@@ -94,7 +127,9 @@ internal class DesktopDecodeAhead(
             queue.clear()
             queuedSamples = 0
             ended = false
+            failed = false
             started = false
+            progressAt = System.nanoTime()
             pendingSeekUs = micros
             wake.signal()
         }
@@ -123,6 +158,9 @@ internal class DesktopDecodeAhead(
                     if (closed) return
                     seekTo = pendingSeekUs
                     pendingSeekUs = null
+                    // A stall is counted from here, the start of this read, never from a time the
+                    // worker spent idle on a full queue during a pause.
+                    progressAt = System.nanoTime()
                     generation
                 }
                 val micros = seekTo
@@ -131,10 +169,16 @@ internal class DesktopDecodeAhead(
                     continue
                 }
 
+                var broke = false
                 val decoded = try {
                     source.readSamples()?.copyOf(source.sampleCount)
-                } catch (failure: Exception) {
-                    DesktopTrackLog.log("decode-ahead: decoder failed, ending the track: ${failure.message}")
+                } catch (failure: InterruptedException) {
+                    throw failure
+                } catch (failure: Throwable) {
+                    // Errors too, not only exceptions: an out-of-memory from the native side used
+                    // to kill this thread without a word, and the audio thread waited on it forever.
+                    DesktopTrackLog.log("decode-ahead: decoder failed, ending the track: ${failure.message ?: failure.javaClass.simpleName}")
+                    broke = true
                     null
                 }
                 lock.withLock {
@@ -146,8 +190,10 @@ internal class DesktopDecodeAhead(
                     // CI, where scheduling lets the caller's close win this race consistently;
                     // Linux's timing hides it. The block dies with the closed reader.
                     if (closed) return@withLock
+                    progressAt = System.nanoTime()
                     if (decoded == null) {
                         ended = true
+                        if (broke) failed = true
                     } else if (decoded.isNotEmpty()) {
                         queue.addLast(decoded)
                         queuedSamples += decoded.size
@@ -157,7 +203,16 @@ internal class DesktopDecodeAhead(
             }
         } catch (_: InterruptedException) {
             // Closing the app; the decoder goes with the process.
+        } catch (failure: Throwable) {
+            DesktopTrackLog.log("decode-ahead: worker stopped: ${failure.message ?: failure.javaClass.simpleName}")
+            lock.withLock { failed = true }
         } finally {
+            // However this thread ends, the reader must hear of it rather than wait for a block
+            // that will never come.
+            lock.withLock {
+                ended = true
+                ready.signalAll()
+            }
             runCatching { source.close() }
         }
     }
@@ -168,5 +223,12 @@ internal class DesktopDecodeAhead(
 
         /** Waits shorter than this are ordinary scheduling, not a network stall worth logging. */
         const val STARVED_LOG_MS = 20L
+
+        /** The longest one read waits before handing the audio thread an empty block. */
+        const val READ_WAIT_MS = 200L
+
+        const val STALL_MS = 25_000L
+
+        val EMPTY = FloatArray(0)
     }
 }

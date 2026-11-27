@@ -53,6 +53,7 @@ Get the latest build from **Releases → v1**:
 - **Audio quality ceiling** and source order you control.
 - **Playback speed** and **skip silence**.
 - **Equalizer** and an output device picker.
+- **Volume boost** (off by default): up to 600%, with Voice boost and Bass boost.
 - **Stats for nerds** — codec, bit depth, sample rate and more on the player.
 
 ## Build locally (optional)
