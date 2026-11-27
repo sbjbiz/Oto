@@ -21,11 +21,6 @@ import kotlin.math.sqrt
  * the video has an intro, a skit, a longer fade. This listens to the opening of each, as an
  * energy envelope (how loud, every 10 ms), and slides one over the other to find where they line
  * up. That gives the exact moment to switch to, so the song carries on rather than jumping.
- *
- * The same comparison answers a second question Oto asks of it: whether the other cut is the
- * same recording at all. A lyric video by someone else, a live take or a different song under
- * the same title does not line up with anything, and that is how a wrong video is caught before
- * it plays.
  */
 internal object DesktopVersionAligner {
 
@@ -40,32 +35,24 @@ internal object DesktopVersionAligner {
     ) {
         /** The two are the same recording, lined up. */
         val matches: Boolean get() = offsetMs != null
-
-        /** The two were compared and are clearly not the same recording. */
-        val different: Boolean get() = measured && confidence < DIFFERENT_BELOW
     }
 
     private const val RATE = 8_000
     private const val HOP_MS = 10.0
     private const val WIN_MS = 40.0
 
-    /** How far apart the two cuts may start: a long video intro is common. */
-    private const val MAX_LAG_SECONDS = 60.0
+    /** How far apart the two cuts may start (BitChord: ±40 s). */
+    private const val MAX_LAG_SECONDS = 40.0
 
-    /** The playing cut's opening that is compared… */
-    private const val SOURCE_SECONDS = 50.0
-
-    /** …against this much of the other, so an intro up to [MAX_LAG_SECONDS] still overlaps. */
-    private const val TARGET_SECONDS = 110.0
+    /** How much of each cut's opening is compared (BitChord: 45 s each). */
+    private const val SOURCE_SECONDS = 45.0
+    private const val TARGET_SECONDS = 45.0
 
     /** BitChord's bar for "these line up". */
     private const val MIN_CONFIDENCE = 0.40
 
-    /** Below this the two plainly are not the same recording. */
-    private const val DIFFERENT_BELOW = 0.22
-
-    /** A comparison never holds a switch longer than this. */
-    private const val TIMEOUT_MS = 12_000L
+    /** A measurement never holds a switch longer than this (BitChord: 30 s). */
+    private const val TIMEOUT_MS = 30_000L
 
     private val offsets = ConcurrentHashMap<Pair<String, String>, Long>()
 

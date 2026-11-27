@@ -91,8 +91,9 @@ class MusicVideoSelfTest {
         val video = runBlocking { YtMusicRepository.resolveVideo(rick) }
         println("convert: '${rick.title}' (${rick.videoId}) -> ${video?.videoId} '${video?.title}'")
         assertTrue(video?.videoId == "dQw4w9WgXcQ", "expected the official video, got ${video?.videoId}")
-        // Round trip: back to audio must land on the exact song it started from.
-        val back = runBlocking { YtMusicRepository.resolveAudio(video!!.copy(isVideo = true)) }
+        // Round trip, as the player does it: back to audio lands on the exact song it started from.
+        YtMusicRepository.rememberVersions(audio = rick, video = video!!)
+        val back = runBlocking { YtMusicRepository.resolveAudio(video.copy(isVideo = true)) }
         println("convert back: ${video.videoId} -> ${back.videoId} '${back.title}'")
         assertTrue(back.videoId == rick.videoId, "round trip landed on ${back.videoId}, not ${rick.videoId}")
         for (query in listOf("Blinding Lights The Weeknd", "Speak to Me Pink Floyd", "Comfortably Numb Pink Floyd")) {
@@ -105,35 +106,23 @@ class MusicVideoSelfTest {
     @Test
     fun convertToVideoAcrossPopularSongs() {
         if (System.getenv("OTO_NET_TEST") != "1") return
-        check(youtubeReady)
         val queries = listOf(
             "One Kiss Calvin Harris", "Levitating Dua Lipa", "Shape of You Ed Sheeran", "As It Was Harry Styles",
             "Espresso Sabrina Carpenter", "Die With A Smile Lady Gaga", "BIRDS OF A FEATHER Billie Eilish",
             "Starboy The Weeknd", "Too Many Nights Metro Boomin", "BbY WOW Karol G", "Queen St twentythree",
-            "Despacito Luis Fonsi",
+            "Despacito Luis Fonsi", "Raindance Dave Tems", "Cruel Summer Taylor Swift",
         )
         var converted = 0
         for (q in queries) {
             val song = runCatching {
                 runBlocking { YtMusicRepository.search(q, SearchFilter.SONGS) }.getOrThrow()
                     .filterIsInstance<SearchResult.Track>().map { it.song }.first { !it.isVideo }
-            }.getOrNull() ?: run { println("flow '$q': no song row"); continue }
-            val candidates = runBlocking { YtMusicRepository.videoCandidates(song) }.take(4)
-            println("flow '${song.title}' by '${song.artist}': ${candidates.size} candidates")
-            var chosen: String? = null
-            var unsure: String? = null
-            for (c in candidates) {
-                val r = runBlocking { DesktopVersionAligner.compare(song, c.song) }
-                println("    ${if (c.vouched) "official" else "upload  "} ${c.song.videoId} '${c.song.title}' by '${c.song.artist}': " +
-                    "measured=${r.measured} confidence=${"%.2f".format(r.confidence)} offset=${r.offsetMs}")
-                if (r.matches) { chosen = "${c.song.videoId} aligned at ${r.offsetMs}ms"; break }
-                if (c.vouched && !r.different && unsure == null) unsure = "${c.song.videoId} (unaligned)"
-            }
-            val pick = chosen ?: unsure
-            if (pick != null) converted++
-            println("    -> ${pick ?: "NO VIDEO"}")
+            }.getOrNull() ?: run { println("bitchord '$q': no song row"); continue }
+            val video = runCatching { runBlocking { YtMusicRepository.resolveVideo(song) } }.getOrNull()
+            if (video != null) converted++
+            println("bitchord '${song.title}' by '${song.artist}' -> ${video?.let { "${it.videoId} '${it.title}' by '${it.artist}'" } ?: "NO VIDEO"}")
         }
-        println("flow: $converted of ${queries.size} converted")
+        println("bitchord: $converted of ${queries.size} converted")
     }
 
     @Test

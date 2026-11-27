@@ -134,56 +134,6 @@ object TrackMatcher {
         ranked(candidates, target).firstOrNull()
 
     /**
-     * Video [candidates] that could be [target]'s music video, best first: the same recording
-     * (same core title, same version markers) by a shared artist, and not a lyric video,
-     * visualizer, live take, cover or the like. The caller still has to confirm one is the
-     * official video — this only narrows who is asked.
-     */
-    fun musicVideoCandidates(candidates: List<Song>, target: Target): List<Song> {
-        val wanted = parseTitle(target.title, target.artist)
-        if (wanted.core.isEmpty()) return emptyList()
-        return candidates
-            .mapNotNull { candidate ->
-                if (NOT_THE_VIDEO.containsMatchIn(candidate.title.lowercase())) return@mapNotNull null
-                if (hasUnknownTag(candidate.title, target)) return@mapNotNull null
-                val got = parseTitle(candidate.title, candidate.artist)
-                if (wanted.core != got.core || wanted.versions != got.versions) return@mapNotNull null
-                val artist = artistScore(target.artist, candidate.artist) ?: return@mapNotNull null
-                candidate to artist
-            }
-            .sortedByDescending { it.second }
-            .map { it.first }
-    }
-
-    /**
-     * Whether a bracket in [title] says something the song's own title does not — "(Chopped Not
-     * Slopped)", "(Sped Up)", "(Arabic Remix)" — beyond the packaging an official video carries
-     * ("Official Video", "feat. …", "4K"). Such a tag is another cut, whatever the core says.
-     */
-    private fun hasUnknownTag(title: String, target: Target): Boolean {
-        val known = (normalize(target.title) + " " + normalize(target.artist))
-            .split(WORD_SPLIT).map { it.replace(NON_ALNUM, "") }.filter { it.isNotEmpty() }.toSet()
-        return TAG_BRACKET.findAll(normalize(title)).any { bracket ->
-            bracket.groupValues[1].split(WORD_SPLIT)
-                .map { it.replace(NON_ALNUM, "") }
-                .filter { it.isNotEmpty() }
-                .any { it !in known && it !in VIDEO_PACKAGING }
-        }
-    }
-
-    private val TAG_BRACKET = Regex("""[(\[]([^)\]]*)[)\]]""")
-
-    private val VIDEO_PACKAGING = setOf(
-        "official", "music", "video", "videoclip", "clip", "mv", "m", "v", "hd", "hq", "4k", "uhd",
-        "feat", "ft", "featuring", "with", "and", "x", "remastered", "remaster", "explicit", "clean",
-        "version", "original", "oficial", "officiel", "short", "film",
-    )
-
-    // "Audio" and visualizer uploads come from the artist's own channel and YouTube labels some of
-    // them official videos too — a still picture, not the video.
-    private val NOT_THE_VIDEO = Regex("""lyric|letra|visuali[sz]er|\baudio\b|\blive\b|cover|karaoke|reaction|teaser|trailer|behind the scenes|mash-?up""")
-
-    /**
      * The catalogue counterpart for a music-video upload selected explicitly
      * by the listener.
      *
