@@ -1124,9 +1124,55 @@ object InnertubeParser {
     fun parseWatchQueue(root: JsonElement): List<Song> {
         val out = LinkedHashMap<String, Song>()
         collectRenderers(root, "playlistPanelVideoRenderer").forEach { renderer ->
-            val videoId = renderer.s("videoId") ?: return@forEach
+            panelSong(renderer)?.let { out[it.videoId] = it }
+        }
+        return out.values.toList()
+    }
+
+    /**
+     * The other cut of [videoId] exactly as YouTube Music pairs it — the pairing behind its own
+     * Song/Video switch — or null when it pairs nothing with it. A `next` response wraps a paired
+     * row in `playlistPanelVideoWrapperRenderer`: a primary renderer and its counterpart. Either
+     * side can be the track asked about.
+     *
+     * This is an answer rather than a guess: a search can land on a live take, a lyric video or
+     * another song by the same artist, and this cannot. A song YouTube pairs no video with has
+     * none — which is what the player then says.
+     */
+    fun parseVersionPair(root: JsonElement, videoId: String, wantAudio: Boolean): Song? {
+        // A row whose type YouTube left out is still the other half of a pair; only a row that
+        // says it is the wrong kind is turned away.
+        fun JsonObject.fits(): Boolean = musicVideoType()?.let { (it == MUSIC_VIDEO_TYPE_ATV) == wantAudio } ?: true
+
+        collectRenderers(root, "playlistPanelVideoWrapperRenderer").forEach { wrapper ->
+            val primary = wrapper.o("primaryRenderer").o("playlistPanelVideoRenderer") ?: return@forEach
+            val counterparts = wrapper.a("counterpart").orEmpty().filterIsInstance<JsonObject>()
+                .mapNotNull { it.o("counterpartRenderer").o("playlistPanelVideoRenderer") }
+            val other = if (primary.s("videoId") == videoId) {
+                counterparts.firstOrNull { it.fits() }
+            } else if (counterparts.any { it.s("videoId") == videoId }) {
+                primary.takeIf { it.fits() }
+            } else {
+                null
+            } ?: return@forEach
+            if (other.s("videoId") == videoId) return@forEach
+            return panelSong(other)?.copy(isVideo = !wantAudio)
+        }
+        return null
+    }
+
+    private fun JsonObject.musicVideoType(): String? =
+        o("navigationEndpoint").o("watchEndpoint").o("watchEndpointMusicSupportedConfigs")
+            .o("watchEndpointMusicConfig").s("musicVideoType")
+
+    private const val MUSIC_VIDEO_TYPE_ATV = "MUSIC_VIDEO_TYPE_ATV"
+
+    /** One watch-queue row as a [Song]. */
+    private fun panelSong(renderer: JsonObject): Song? {
+        return run {
+            val videoId = renderer.s("videoId") ?: return null
             val title = renderer.o("title").runs()
-            if (title.isBlank()) return@forEach
+            if (title.isBlank()) return null
             // The byline packs artist, views and likes into one run list; only
             // the leading runs before the first bullet are the credit.
             val bylineRuns = renderer.o("longBylineText").a("runs").orEmpty()
@@ -1135,7 +1181,7 @@ object InnertubeParser {
             // Those same runs link out to the artist and album pages, which is
             // how a track started from the queue knows where it came from.
             val credits = creditsOf(bylineRuns)
-            out[videoId] = Song(
+            Song(
                 videoId = videoId,
                 title = title,
                 artist = artist,
@@ -1151,7 +1197,6 @@ object InnertubeParser {
                 isExplicit = renderer.hasExplicitBadge(),
             )
         }
-        return out.values.toList()
     }
 
     /**

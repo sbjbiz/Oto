@@ -80,7 +80,6 @@ import app.oto.ui.components.PlayingAccent
 import app.oto.ui.components.PullToRefresh
 import app.oto.ui.components.SHELF_CARD_WIDTH
 import app.oto.ui.components.SearchPlayingBars
-import app.oto.ui.components.SignInBanner
 import app.oto.ui.components.feedMoreSkeleton
 import app.oto.ui.components.feedSkeleton
 import app.oto.ui.components.recentlyPlayedSkeleton
@@ -122,7 +121,6 @@ fun HomeScreen(
     /** The page's heading, or null for none — the desktop's pages carry no heading. */
     title: String?,
     signedIn: Boolean = true,
-    onSignIn: (() -> Unit)? = null,
     /**
      * Holding a card rather than tapping it. Every card on the feed answers,
      * whichever kind it is: the caller reads the item the same way it does for
@@ -167,11 +165,6 @@ fun HomeScreen(
         ) {
             if (title != null) {
                 item { HomeTitle(title) }
-            }
-            if (!signedIn && onSignIn != null) {
-                item {
-                    SignInBanner(onSignIn = onSignIn, modifier = Modifier.padding(bottom = 8.dp))
-                }
             }
             when (state) {
                 is UiState.Loading -> {

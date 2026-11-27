@@ -29,6 +29,14 @@ internal object DesktopWindowMode {
     private val fillsScreen: WindowPlacement =
         if (DesktopPlatform.drawsOwnWindowFrame) WindowPlacement.Maximized else WindowPlacement.Fullscreen
 
+    /**
+     * True while the player's video button, not F11, is what put the window in full screen — Esc
+     * then belongs to the video view rather than to the window.
+     */
+    @Volatile
+    var heldByVideo = false
+
+    /** F11: true full screen over the taskbar, and back to exactly the window it was before. */
     fun toggle() = setFullScreen(!_fullScreen.value)
 
     /**
@@ -59,6 +67,7 @@ internal object DesktopWindowMode {
     }
 
     internal fun setFullScreen(on: Boolean) {
+        if (!on) heldByVideo = false
         _fullScreen.value = on
         // On Windows the only thing that covers a taskbar told to stay on top is a native borderless
         // window raised above it; no Compose placement does, and true Fullscreen paints the screen

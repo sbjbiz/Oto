@@ -31,6 +31,7 @@ WNDPROC g_original_proc = nullptr;
 // put the caption window back exactly where it was.
 LONG_PTR g_fullscreen_style = 0;
 RECT g_fullscreen_rect{};
+WINDOWPLACEMENT g_fullscreen_placement{sizeof(WINDOWPLACEMENT)};
 bool g_fullscreen_active = false;
 // The oversized monitor rectangle fullscreen is pinned to; WM_WINDOWPOSCHANGING forces every move
 // and resize back to it so nothing — AWT, the shell, the taskbar raising itself — can uncover it.
@@ -254,6 +255,10 @@ bool set_fullscreen(HWND window, bool on) {
 
         g_fullscreen_style = GetWindowLongPtrW(window, GWL_STYLE);
         if (GetWindowRect(window, &g_fullscreen_rect) == FALSE) return false;
+        // Remembers whether the window was floating or maximized (and where it floats), so F11 or
+        // Esc puts it back exactly as it was rather than as a window the size of the old rect.
+        g_fullscreen_placement.length = sizeof(WINDOWPLACEMENT);
+        GetWindowPlacement(window, &g_fullscreen_placement);
         constexpr int OVERSHOOT = 8;
         g_fullscreen_target = RECT{
             monitor.rcMonitor.left - OVERSHOOT,
@@ -292,11 +297,17 @@ bool set_fullscreen(HWND window, bool on) {
 
     SetWindowLongPtrW(window, GWL_STYLE, g_fullscreen_style);
     SetWindowPos(
-        window, HWND_NOTOPMOST,
-        g_fullscreen_rect.left, g_fullscreen_rect.top,
-        g_fullscreen_rect.right - g_fullscreen_rect.left,
-        g_fullscreen_rect.bottom - g_fullscreen_rect.top,
-        SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        window, HWND_NOTOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    if (g_fullscreen_placement.showCmd == SW_SHOWMINIMIZED) g_fullscreen_placement.showCmd = SW_SHOWNORMAL;
+    if (SetWindowPlacement(window, &g_fullscreen_placement) == FALSE) {
+        SetWindowPos(
+            window, HWND_NOTOPMOST,
+            g_fullscreen_rect.left, g_fullscreen_rect.top,
+            g_fullscreen_rect.right - g_fullscreen_rect.left,
+            g_fullscreen_rect.bottom - g_fullscreen_rect.top,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
     // Hand the frame's own shadow margin and any material back; DesktopWindowBackdrop.apply()
     // re-asserts the chosen material over the top of this on the Kotlin side.
     const MARGINS shadow_frame{1, 1, 1, 1};

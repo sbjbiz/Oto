@@ -138,18 +138,14 @@ internal object DesktopPlayerHost : PlayerHost {
 
     override fun setMusicVideoQuality(height: Int?) = DesktopMusicVideoQuality.hold(height)
 
-    /** Whether the window went full screen for a video, so leaving it undoes only that. */
-    @Volatile
-    private var videoTookFullScreen = false
-
+    /** Full screen for a video undoes only what the video did; F11's full screen is left alone. */
     override fun setVideoFullscreen(on: Boolean) {
         if (on) {
             if (!DesktopWindowMode.fullScreen.value) {
                 DesktopWindowMode.setFullScreen(true)
-                videoTookFullScreen = true
+                DesktopWindowMode.heldByVideo = true
             }
-        } else if (videoTookFullScreen) {
-            videoTookFullScreen = false
+        } else if (DesktopWindowMode.heldByVideo) {
             DesktopWindowMode.setFullScreen(false)
         }
     }

@@ -1,6 +1,21 @@
+<div align="center">
+
+<img src="desktopApp/packaging/icons/AppIcon.png" width="96" alt="Oto icon" />
+
 # Oto
 
-A lightweight, personal Windows (x64) music player. No account, no sign-in.
+**A lightweight, personal Windows (x64) music player. No account, no sign-in.**
+
+[![Release](https://img.shields.io/github/v/release/sbjbiz/oto?label=release&style=flat-square&color=0a84ff)](https://github.com/sbjbiz/oto/releases/latest)
+[![License](https://img.shields.io/badge/license-GPL--3.0-f28c28?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-6e6e73?style=flat-square)](https://github.com/sbjbiz/oto/releases/latest)
+
+[Download](#download) · [Features](#features) · [Build](#build-locally-optional) · [Disclaimer](#disclaimer)
+
+</div>
+
+> [!IMPORTANT]
+> Oto is not affiliated with, endorsed by, or connected to YouTube or Google in any way. Use it at your own discretion.
 
 ## Download
 

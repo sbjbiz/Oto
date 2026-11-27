@@ -387,6 +387,10 @@ object YtMusicRepository {
     suspend fun resolveAudio(song: Song): Song {
         if (!song.isVideo) return song
         audioVersionCache[song.videoId]?.let { return it }
+        officialVersion(song, wantAudio = true)?.let { audio ->
+            audioVersionCache[song.videoId] = audio
+            return audio
+        }
         val target = TrackMatcher.targetOf(song)
         for (query in TrackMatcher.queries(target)) {
             val candidates = search(query, SearchFilter.SONGS)
@@ -424,6 +428,14 @@ object YtMusicRepository {
     suspend fun resolveVideo(song: Song): Song? {
         if (song.isVideo) return null
         videoVersionCache[song.videoId]?.let { return it }
+        // YouTube Music's own Song/Video pairing first: exact, never a guess.
+        officialVersion(song, wantAudio = false)?.let { video ->
+            videoVersionCache[song.videoId] = video
+            return video
+        }
+        // Only when YouTube states no pairing: an upload that calls itself the official video of
+        // exactly this title by this artist. A lyric video, a live take, a visualizer or another
+        // song by the same artist is not the song's video, so the player says there is none.
         val target = TrackMatcher.targetOf(song)
         for (query in TrackMatcher.queries(target)) {
             val candidates = search(query, SearchFilter.VIDEOS)
@@ -431,15 +443,35 @@ object YtMusicRepository {
                 ?.filterIsInstance<SearchResult.Track>()
                 ?.map { it.song }
                 .orEmpty()
-            TrackMatcher.best(candidates, target)?.let { match ->
+            TrackMatcher.officialVideoFor(candidates, target)?.let { match ->
                 Log.d(TAG, "video switch: '${song.title}' -> '${match.title}' ($query)")
                 videoVersionCache[song.videoId] = match
                 return match
             }
         }
-        Log.w(TAG, "video switch: no video match for '${song.title}' by '${song.artist}'")
-        videoVersionCache[song.videoId] = null
+        Log.w(TAG, "video switch: no official video for '${song.title}' by '${song.artist}'")
         return null
+    }
+
+    /**
+     * The other cut of [song] as YouTube Music pairs it — the pairing behind its own Song/Video
+     * switch — or null when it pairs none.
+     */
+    private suspend fun officialVersion(song: Song, wantAudio: Boolean): Song? {
+        val other = try {
+            InnertubeParser.parseVersionPair(Innertube.next(song.videoId), song.videoId, wantAudio)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "version pair lookup failed for '${song.title}': ${e.message}")
+            null
+        }
+        if (other == null) {
+            Log.d(TAG, "version pair: YouTube pairs nothing with '${song.title}'")
+        } else {
+            Log.d(TAG, "version pair: '${song.title}' -> '${other.title}' (${other.videoId})")
+        }
+        return other
     }
 
     /** Signed-in profile for the settings header. Null when signed out. */

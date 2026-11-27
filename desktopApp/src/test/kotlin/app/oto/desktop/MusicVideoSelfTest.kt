@@ -1,6 +1,9 @@
 package app.oto.desktop
 
+import app.oto.data.YtMusicRepository
 import app.oto.data.innertube.StreamResolver
+import app.oto.data.model.SearchFilter
+import app.oto.data.model.SearchResult
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.ColorAlphaType
@@ -43,6 +46,24 @@ class MusicVideoSelfTest {
             assertTrue(lastPts in 25_000..40_000, "seek landed at ${lastPts}ms")
         } finally {
             decoder.close()
+        }
+    }
+
+    @Test
+    fun convertToVideoFindsTheOfficialVideoOnly() {
+        if (System.getenv("OTO_NET_TEST") != "1") return
+        fun song(query: String) = runBlocking {
+            YtMusicRepository.search(query, SearchFilter.SONGS).getOrThrow()
+                .filterIsInstance<SearchResult.Track>().map { it.song }.first { !it.isVideo }
+        }
+        val rick = song("Never Gonna Give You Up Rick Astley")
+        val video = runBlocking { YtMusicRepository.resolveVideo(rick) }
+        println("convert: '${rick.title}' (${rick.videoId}) -> ${video?.videoId} '${video?.title}'")
+        assertTrue(video?.videoId == "dQw4w9WgXcQ", "expected the official video, got ${video?.videoId}")
+        for (query in listOf("Blinding Lights The Weeknd", "Speak to Me Pink Floyd", "Comfortably Numb Pink Floyd")) {
+            val track = runCatching { song(query) }.getOrNull() ?: continue
+            val found = runBlocking { YtMusicRepository.resolveVideo(track) }
+            println("convert: '${track.title}' by ${track.artist} -> ${found?.let { "${it.videoId} '${it.title}'" } ?: "no video"}")
         }
     }
 

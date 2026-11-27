@@ -2543,6 +2543,11 @@ fun OtoDesktopApp() {
                         // One layer at a time, innermost first: the player's own side panel, then
                         // the player.
                         event.key == Key.Escape -> when {
+                            // F11's full screen first: Esc puts the window back the way it was.
+                            DesktopWindowMode.fullScreen.value && !DesktopWindowMode.heldByVideo -> {
+                                DesktopWindowMode.setFullScreen(false)
+                                true
+                            }
                             // The player's own layers first — the lyrics, the queue, a
                             // drawer — in the order Android's back reaches them.
                             overlays.nowPlaying && PlayerBack.dispatch() -> true
@@ -2675,7 +2680,6 @@ fun OtoDesktopApp() {
                     DesktopPlayerSheet(
                         visible = overlays.nowPlaying && selectedSong != null,
                         onDismiss = {
-                            DesktopWindowMode.exit()
                             overlays.nowPlaying = false
                         },
                     ) { windowWidth, windowHeight ->
@@ -3277,7 +3281,6 @@ fun OtoDesktopApp() {
                             contentPadding = sharedPagePadding,
                             title = null,
                             signedIn = true,
-                            onSignIn = null,
                             onItemLongPress = { item -> if (item.videoId != null) openMenu(item.toSong()) },
                             onLoadMore = ::loadMoreHome,
                             loadingMore = homeLoadingMore,
@@ -3423,7 +3426,6 @@ fun OtoDesktopApp() {
                             onShelfItemClick = ::openLibraryItem,
                             onShelfItemLongPress = { item -> if (item.videoId != null) openMenu(item.toSong()) },
                             onNewPlaylist = { overlays.playlistDialog = true },
-                            onImportSpotifyPlaylist = null,
                             onShowAll = { shelf -> libraryShowAll = shelf },
                             replay = {
                                 // The phone's wallet of Replay cards, or nothing until there is
@@ -3450,7 +3452,6 @@ fun OtoDesktopApp() {
                                     }
                                 }
                             },
-                            onSignIn = {},
                             onRetry = ::reloadLibrary,
                             refreshing = false,
                             onRefresh = ::reloadLibrary,
@@ -4296,6 +4297,9 @@ private fun DesktopFrame(
     val appBackground by DesktopWindowBackdrop.appBackground.collectAsState()
     val glass = material != DesktopBackdrop.OFF
     val materialBehindApp = glass && appBackground
+    // Like OBS's full-screen interface: the top bar goes away only in true (F11) full screen, and
+    // comes back in a floating or maximized window.
+    val fullScreen by DesktopWindowMode.fullScreen.collectAsState()
     val maximized by DesktopWindowMode.maximized.collectAsState()
     val roundCorners = DesktopPlatform.isMac && !maximized
     CompositionLocalProvider(LocalDesktopHaze provides haze) {
@@ -4319,7 +4323,7 @@ private fun DesktopFrame(
                         Row(Modifier.fillMaxSize()) {
                             if (!compact) sidebar()
                             Column(Modifier.weight(1f).fillMaxHeight()) {
-                            topBar(compact)
+                            if (!fullScreen) topBar(compact)
                             Row(Modifier.fillMaxWidth().weight(1f)) {
                                 Box(
                                     Modifier
