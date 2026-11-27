@@ -837,6 +837,14 @@ Java_app_oto_desktop_DesktopWindowsFrame_nativeToggleMaximize(JNIEnv*, jclass) {
         ? JNI_TRUE : JNI_FALSE;
 }
 
+// Hands the pages this process is not using back to Windows; they come back on demand. Called
+// once the window has been out of sight a while, which is what Task Manager reads as its memory.
+JNIEXPORT jboolean JNICALL
+Java_app_oto_desktop_DesktopWindowsFrame_nativeTrimWorkingSet(JNIEnv*, jclass) {
+    return SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1))
+        ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_app_oto_desktop_DesktopWindowsFrame_nativeSetFullscreen(JNIEnv*, jclass, jboolean on) {
     return set_fullscreen(g_window, on == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;

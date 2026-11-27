@@ -253,6 +253,12 @@ internal class DesktopMusicVideoSession(val videoId: String) {
             // Start where the audio already is: a conversion lands mid-song.
             withContext(Dispatchers.IO) { decoder.seekTo(DesktopMusicVideoClock.nowMs()) }
             while (currentCoroutineContext().isActive) {
+                // Nobody can see it: decode nothing. On the way back the drift check below seeks
+                // straight to wherever the song has got to.
+                if (!DesktopWindowVisibility.visible.value || DesktopWindowVisibility.minimized.value) {
+                    delay(HIDDEN_POLL_MS)
+                    continue
+                }
                 val target = DesktopMusicVideoClock.nowMs()
                 val jumped = DesktopMusicVideoClock.seeks != seeksSeen
                 val drifted = shownPts >= 0 && (target < shownPts - 750 || target > shownPts + 2_500)
@@ -413,6 +419,7 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
 }
 
 private const val PAUSED_POLL_MS = 60L
+private const val HIDDEN_POLL_MS = 250L
 private const val LATE_MS = 120L
 private const val EARLY_MS = 15L
 private const val MAX_WAIT_MS = 40L

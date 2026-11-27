@@ -421,6 +421,9 @@ compose.desktop {
         dependsOn("jar", "slimLibs")
         jvmArgs("-Xmx512m")
         jvmArgs("-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=20000", "-XX:G1PeriodicGCSystemLoadThreshold=0")
+        // Give heap back to Windows after a collection instead of keeping it reserved, and share
+        // identical strings (titles, artist names, JSON keys) rather than holding copies.
+        jvmArgs("-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=25", "-XX:+UseStringDeduplication")
         jvmArgs("-Doto.version=$appVersion")
         if (desktopModuleIndexUrl.isNotBlank()) {
             jvmArgs("-Doto.module.index=$desktopModuleIndexUrl")

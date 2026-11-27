@@ -98,7 +98,10 @@ class DesktopPersistence {
 
     fun saveFloat(key: String, value: Float) = preferences.putFloat(key, value)
 
-    fun sourceEnabled(sourceId: String): Boolean = boolean("source_${sourceId}_enabled", true)
+    // JioSaavn starts off: its title-and-artist matches stood in for the YouTube track the listener
+    // picked, and a wrong match is a different song playing under the chosen one's name.
+    fun sourceEnabled(sourceId: String): Boolean =
+        boolean("source_${sourceId}_enabled", sourceId != "jiosaavn")
 
     fun saveSourceEnabled(sourceId: String, enabled: Boolean) =
         saveBoolean("source_${sourceId}_enabled", enabled)
@@ -146,8 +149,19 @@ class DesktopPersistence {
 
         // YouTube remains the non-removable catalogue fallback, matching the Android source
         // registry.
+        // Once, for installs that had JioSaavn on from the old default: switch it off. The
+        // listener can turn it back on in Settings, and that choice is then left alone.
+        val jioMigrated = boolean(KEY_JIOSAAVN_DEFAULT_OFF, false)
+        if (!jioMigrated) {
+            saveBoolean(KEY_JIOSAAVN_DEFAULT_OFF, true)
+            saveSourceEnabled("jiosaavn", false)
+        }
         val normalized = withBuiltIns.map {
-            if (it.kind == DesktopSourceKind.YOUTUBE && !it.enabled) it.copy(enabled = true) else it
+            when {
+                it.kind == DesktopSourceKind.YOUTUBE && !it.enabled -> it.copy(enabled = true)
+                it.kind == DesktopSourceKind.JIOSAAVN && !jioMigrated -> it.copy(enabled = false)
+                else -> it
+            }
         }.inSourceOrder()
         if (stored == null || normalized != stored || (DesktopPlatform.isWindows && protected == null)) {
             saveSourceConfigs(normalized)
@@ -348,3 +362,5 @@ private fun DesktopPlaylist.toPreferenceLine(): String = listOf(
         })
     },
 ).joinToString("#")
+
+private const val KEY_JIOSAAVN_DEFAULT_OFF = "jiosaavn_default_off"

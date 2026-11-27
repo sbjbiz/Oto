@@ -97,6 +97,14 @@ private fun desktopMain() = application {
     ) {
         val composeWindow = window
         val openingSize = remember { state.size }
+        // Out of sight — in the tray or minimized — Oto lets go of what only the screen needed.
+        LaunchedEffect(Unit) {
+            kotlinx.coroutines.flow.combine(
+                DesktopWindowVisibility.visible,
+                DesktopWindowVisibility.minimized,
+            ) { shown, minimized -> shown && !minimized }
+                .collect { DesktopMemory.onWindowShown(it) }
+        }
         LaunchedEffect(composeWindow) {
             DesktopWindowVisibility.attachWindow(composeWindow)
             DesktopWindowMode.installKeys()

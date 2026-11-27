@@ -62,6 +62,12 @@ internal object DesktopWindowsFrame {
     @JvmStatic
     private external fun nativeSetFullscreen(on: Boolean): Boolean
 
+    /** Returns unused memory pages to Windows; see [DesktopMemory]. */
+    fun trimWorkingSet(): Boolean = installed && runCatching { nativeTrimWorkingSet() }.getOrDefault(false)
+
+    @JvmStatic
+    private external fun nativeTrimWorkingSet(): Boolean
+
     /**
      * Puts DWM's material behind the window — [DesktopBackdrop.nativeKind] — or takes it away.
      * False without the native frame, or on a Windows too old to have one.
