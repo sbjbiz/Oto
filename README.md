@@ -51,7 +51,6 @@ Get the latest build from **Releases → v1**:
 ### Controls & Tweaks
 - **Audio quality ceiling** and source order you control.
 - **Playback speed** and **skip silence**.
-- **Sleep timer** in Settings.
 - **Equalizer** and an output device picker.
 - **Stats for nerds** — codec, bit depth, sample rate and more on the player.
 

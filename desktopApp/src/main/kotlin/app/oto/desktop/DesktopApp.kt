@@ -125,7 +125,6 @@ import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.ArrowForward
-import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
@@ -725,18 +724,6 @@ fun OtoDesktopApp() {
     val youtubeSourceEnabled = sourceConfigs.any {
         it.kind == DesktopSourceKind.YOUTUBE && it.enabled
     }
-    val sleepTimerMinutes by DesktopSleepTimer.minutes.collectAsState()
-    val sleepAfterTrack by DesktopSleepTimer.afterTrack.collectAsState()
-    var sleepTimerTick by remember { mutableStateOf(0L) }
-    LaunchedEffect(sleepTimerMinutes) {
-        while (sleepTimerMinutes != null && currentCoroutineContext().isActive) {
-            delay(1_000L)
-            sleepTimerTick++
-        }
-    }
-    val sleepRemainingMs = remember(sleepTimerMinutes, sleepTimerTick) {
-        DesktopSleepTimer.remainingMs()
-    }
     var openedCollection by remember { mutableStateOf<DesktopCollection?>(null) }
     var collectionLoadingMore by remember { mutableStateOf(false) }
     var collectionError by remember { mutableStateOf<String?>(null) }
@@ -872,17 +859,6 @@ fun OtoDesktopApp() {
         }
     }
 
-    fun cycleSleepTimer() {
-        when {
-            sleepAfterTrack -> DesktopSleepTimer.cancel()
-            sleepTimerMinutes == null -> DesktopSleepTimer.start(DesktopSleepTimer.presets.first())
-            sleepTimerMinutes == DesktopSleepTimer.presets.last() -> DesktopSleepTimer.startAfterTrack()
-            else -> {
-                val current = DesktopSleepTimer.presets.indexOf(sleepTimerMinutes)
-                DesktopSleepTimer.start(DesktopSleepTimer.presets.getOrElse(current + 1) { DesktopSleepTimer.presets.last() })
-            }
-        }
-    }
     startSong = ::playSong
 
     /** Applies a rating locally and carries it to the account. */
@@ -1266,9 +1242,7 @@ fun OtoDesktopApp() {
     playbackEngine = remember {
         DesktopPlaybackEngine(
             onEnded = {
-                if (DesktopSleepTimer.afterTrack.value) {
-                    DesktopSleepTimer.cancel()
-                } else if (repeatMode == DesktopRepeatMode.ONE) {
+                if (repeatMode == DesktopRepeatMode.ONE) {
                     // Replayed in place. [startSong] makes the track a queue of one, which threw
                     // the rest of the queue away the first time it repeated.
                     val song = selectedSong
@@ -1372,15 +1346,6 @@ fun OtoDesktopApp() {
             autoplayJob = null
             autoplaySeed = null
             loadAutoplaySongs()
-        }
-    }
-    LaunchedEffect(Unit) {
-        while (currentCoroutineContext().isActive) {
-            delay(1_000L)
-            if (DesktopSleepTimer.isExpired()) {
-                DesktopSleepTimer.cancel()
-                playbackEngine.pause()
-            }
         }
     }
     val playback by playbackEngine.state.collectAsState()
@@ -3107,10 +3072,6 @@ fun OtoDesktopApp() {
                                         audioQuality = it
                                         persistence.saveAudioQuality(it)
                                     },
-                                    sleepTimerMinutes = sleepTimerMinutes,
-                                    sleepAfterTrack = sleepAfterTrack,
-                                    sleepRemainingMs = sleepRemainingMs,
-                                    onSleepTimerCycle = ::cycleSleepTimer,
                                     sourceConfigs = sourceConfigs,
                                     sourceStatus = sourceStatus,
                                     onSourceEnabledChange = { config, enabled ->
@@ -5046,10 +5007,6 @@ private fun DesktopSettingsScreen(
     onDownloadQualityChange: (String) -> Unit,
     audioQuality: DesktopAudioQuality,
     onAudioQualityChange: (DesktopAudioQuality) -> Unit,
-    sleepTimerMinutes: Int?,
-    sleepAfterTrack: Boolean,
-    sleepRemainingMs: Long?,
-    onSleepTimerCycle: () -> Unit,
     sourceConfigs: List<DesktopSourceConfig>,
     sourceStatus: Map<String, String>,
     onSourceEnabledChange: (DesktopSourceConfig, Boolean) -> Unit,
@@ -5261,15 +5218,6 @@ private fun DesktopSettingsScreen(
                         }
                         onPlaybackSpeedChange(next)
                     }
-                    SettingsRow(
-                        Icons.Rounded.Bedtime,
-                        "Sleep timer",
-                        when {
-                            sleepRemainingMs != null -> "${formatSleepTimer(sleepRemainingMs)} until playback pauses"
-                            sleepAfterTrack -> "Pausing when this song ends"
-                            else -> "Pause playback after a while"
-                        },
-                    ) { onSleepTimerCycle() }
                 }
             }
             if (section == DesktopSettingsSection.LYRICS) item {
@@ -7121,4 +7069,3 @@ private fun formatCollectionDuration(totalSeconds: Long): String {
     }
 }
 
-private fun formatSleepTimer(ms: Long): String = formatTime(ms)

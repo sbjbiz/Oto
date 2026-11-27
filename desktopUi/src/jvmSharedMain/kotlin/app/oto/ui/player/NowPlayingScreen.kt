@@ -2172,12 +2172,9 @@ fun NowPlayingScreen(
                             },
                             status = lyricsTranslation.status,
                             onStatusClick = { showLyricsProviders = true },
-                            // On a desktop window the sheet's footer is folded into
-                            // the song menu and the overflow; a phone-height window
-                            // keeps it. Where the sung line rests is the panel's own
-                            // anchor (see [LyricsPanel]), so the sheet runs the full
-                            // height of the column.
-                            showBar = compact,
+                            // The footer carries "Lyrics by …", the way to switch provider;
+                            // the song menu no longer has a provider row, so it always shows.
+                            showBar = true,
                             picking = lyricPicker.picking,
                             pickBar = {
                                 LyricsPickBar(

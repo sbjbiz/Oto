@@ -76,6 +76,9 @@ class MusicVideoSelfTest {
     @Test
     fun homeIsBuiltFromTheCharts() {
         if (System.getenv("OTO_NET_TEST") != "1") return
+        val raw = runBlocking { app.oto.data.innertube.Innertube.charts("US") }.toString()
+        println("charts US: ${raw.length} chars; renderers: " + Regex("\"([a-zA-Z]+Renderer)\"").findAll(raw).map { it.groupValues[1] }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(25))
+        Regex("\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]{3,60})\"").findAll(raw).take(15).forEach { println("charts title: ${it.groupValues[1]}") }
         val home = runBlocking { YtMusicRepository.home() }.getOrThrow()
         home.shelves.forEach { println("home shelf: ${it.title} (${it.items.size}): ${it.items.take(3).joinToString { i -> i.title }}") }
         assertTrue(home.shelves.isNotEmpty(), "home came back empty")
