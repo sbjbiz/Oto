@@ -48,6 +48,16 @@ object YtMusicRepository {
     private val videoVersionCache = ConcurrentHashMap<String, Song?>()
 
     fun cachedAudioVersion(videoId: String): Song? = audioVersionCache[videoId]
+
+    /**
+     * Records a found pair both ways, so switching back lands on the exact track the listener
+     * started from instead of searching again — a second search is how a song converted to its
+     * video and back used to come back as an instrumental or another take.
+     */
+    private fun rememberPair(audio: Song, video: Song) {
+        audioVersionCache[video.videoId] = audio.copy(isVideo = false)
+        videoVersionCache[audio.videoId] = video.copy(isVideo = true)
+    }
     fun cachedVideoVersion(videoId: String): Song? = videoVersionCache[videoId]
 
     /**
@@ -388,7 +398,7 @@ object YtMusicRepository {
         if (!song.isVideo) return song
         audioVersionCache[song.videoId]?.let { return it }
         officialVersion(song, wantAudio = true)?.let { audio ->
-            audioVersionCache[song.videoId] = audio
+            rememberPair(audio = audio, video = song)
             return audio
         }
         val target = TrackMatcher.targetOf(song)
@@ -400,7 +410,7 @@ object YtMusicRepository {
                 .orEmpty()
             TrackMatcher.best(candidates, target)?.let { match ->
                 Log.d(TAG, "audio switch: '${song.title}' -> '${match.title}' ($query)")
-                audioVersionCache[song.videoId] = match
+                rememberPair(audio = match, video = song)
                 return match
             }
             // Music-video timing is visual timing, not the audio release's
@@ -408,7 +418,7 @@ object YtMusicRepository {
             // song/artist match even when the video has a long intro or outro.
             TrackMatcher.bestOfficialAudioForVideo(candidates, target)?.let { match ->
                 Log.d(TAG, "audio switch: accepted video/runtime drift '${song.title}' -> '${match.title}' ($query)")
-                audioVersionCache[song.videoId] = match
+                rememberPair(audio = match, video = song)
                 return match
             }
         }
@@ -430,7 +440,7 @@ object YtMusicRepository {
         videoVersionCache[song.videoId]?.let { return it }
         // YouTube Music's own Song/Video pairing first: exact, never a guess.
         officialVersion(song, wantAudio = false)?.let { video ->
-            videoVersionCache[song.videoId] = video
+            rememberPair(audio = song, video = video)
             return video
         }
         // Signed out, YouTube states no pairing, so: the same title by the same artist, confirmed
@@ -451,7 +461,7 @@ object YtMusicRepository {
                 }.getOrNull()
                 if (type != MUSIC_VIDEO_TYPE_OMV) continue
                 Log.d(TAG, "video switch: '${song.title}' -> '${candidate.title}' ($query)")
-                videoVersionCache[song.videoId] = candidate
+                rememberPair(audio = song, video = candidate)
                 return candidate
             }
         }

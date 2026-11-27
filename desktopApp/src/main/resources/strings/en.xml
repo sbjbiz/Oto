@@ -110,8 +110,6 @@
     <string name="synced_lyrics_subtitle">Lights up the words on the player as they’re sung</string>
     <string name="lyrics_sources">Lyrics sources</string>
     <string name="song_cache_limit">Song cache limit</string>
-    <string name="hide_volume_bar">Hide volume bar</string>
-    <string name="hide_volume_bar_subtitle">Removes the volume slider from the main player</string>
     <string name="off">Off</string>
     <string name="low">Low</string>
     <string name="high">High</string>

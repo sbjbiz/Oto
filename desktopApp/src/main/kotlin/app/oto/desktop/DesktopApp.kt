@@ -652,7 +652,15 @@ fun OtoDesktopApp() {
     var spatialAudio by remember { mutableStateOf(persistence.boolean("spatial_audio", false)) }
     var dolbyAtmos by remember { mutableStateOf(persistence.boolean("dolby_atmos", true)) }
     var skipSilence by remember { mutableStateOf(persistence.boolean("skip_silence", false)) }
-    var outputPrecision by remember { mutableStateOf(persistence.string("output_precision", "PCM_16")) }
+    // 32-bit float by default: Windows mixes in float anyway, and volume, EQ and crossfade lose
+    // nothing to rounding. Moved over once for an install that saved the old 16-bit default.
+    var outputPrecision by remember {
+        if (!persistence.boolean("output_precision_float_default", false)) {
+            persistence.saveString("output_precision", "FLOAT_32")
+            persistence.saveBoolean("output_precision_float_default", true)
+        }
+        mutableStateOf(persistence.string("output_precision", "FLOAT_32"))
+    }
     // The blob backdrop the mesh replaced, kept as an opt-out.
     var legacyMeshGradient by remember { mutableStateOf(persistence.boolean("legacy_mesh_gradient", false)) }
     var animatedCanvas by remember { mutableStateOf(persistence.boolean("animated_canvas", true)) }
@@ -5480,13 +5488,6 @@ private fun DesktopSettingsScreen(
                             onCloseToTrayChange,
                         )
                     }
-                    val hideVolumeBar by DesktopAppearanceSettings.hideVolumeBar.collectAsState()
-                    SettingsToggle(
-                        DesktopStrings["hide_volume_bar", "Hide volume bar"],
-                        DesktopStrings["hide_volume_bar_subtitle", "Removes the volume slider from the main player"],
-                        hideVolumeBar,
-                        DesktopAppearanceSettings::setHideVolumeBar,
-                    )
                 }
             }
             if (section == DesktopSettingsSection.AUDIO_QUALITY) item {

@@ -13,6 +13,17 @@ import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
 import app.oto.ui.player.MusicVideoQualityUi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import org.jetbrains.skia.Bitmap
@@ -169,38 +180,55 @@ private fun pickRendition(
         ?: renditions.maxByOrNull { it.height }
 }
 
-/** The player's cover slot, playing the music video in step with the audio. */
-@Composable
-internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modifier: Modifier) {
-    var frame by remember(videoId) { mutableStateOf<ImageBitmap?>(null) }
-    val rendered = frame != null
-    val reportRendered by rememberUpdatedState(spec.onRenderedChanged)
-    val reportCover by rememberUpdatedState(spec.onCoverChanged)
-    val reportFrame by rememberUpdatedState(spec.onFrameCaptured)
-    val presentationAlpha by rememberUpdatedState(spec.presentationAlpha)
-    val paused by rememberUpdatedState(spec.pausedForTransition)
+/**
+ * One playing music video, shared by every view showing it.
+ *
+ * The player's sleeve and the full-screen view used to open the stream each on their own, so
+ * going full screen (and back) meant a fresh lookup, a fresh connection and a seek — a second or
+ * more of black each way. Now the decoder lives here, and a view only draws its latest frame:
+ * switching views is instant. Quality follows the largest view showing it and only ever steps
+ * up within a session, so leaving full screen never reopens the stream at a lower rendition.
+ */
+internal class DesktopMusicVideoSession(val videoId: String) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val _frame = MutableStateFlow<ImageBitmap?>(null)
 
-    val quality by DesktopMusicVideoQuality.state.collectAsState()
-    var renditions by remember(videoId) { mutableStateOf<List<StreamResolver.VideoOnly>>(emptyList()) }
-    var viewHeightPx by remember { mutableIntStateOf(0) }
-    val autoTarget = AUTO_STEPS.firstOrNull { it >= viewHeightPx } ?: AUTO_STEPS.last()
+    /** The newest picture; it stays up across a change of rendition rather than going black. */
+    val frame: StateFlow<ImageBitmap?> = _frame
 
-    LaunchedEffect(videoId) {
-        val found = withContext(Dispatchers.IO) {
-            runCatching { StreamResolver.resolveVideoOnly(videoId) }
-                .onFailure { DesktopTrackLog.log("music video: lookup failed for $videoId: ${it.message}") }
-                .getOrDefault(emptyList())
+    private val wanted = MutableStateFlow<Map<Any, Int>>(emptyMap())
+    internal var holders = 0
+    internal var closing: Job? = null
+
+    /** How tall [holder] draws the picture, in pixels; 0 when it no longer does. */
+    fun want(holder: Any, heightPx: Int) =
+        wanted.update { if (heightPx <= 0) it - holder else it + (holder to heightPx) }
+
+    init {
+        scope.launch {
+            val renditions = DesktopMusicVideoSessions.renditionsFor(videoId)
+            if (renditions.isEmpty()) {
+                DesktopTrackLog.log("music video: no picture stream for $videoId; showing the cover")
+                return@launch
+            }
+            DesktopMusicVideoQuality.offered(renditions.map { it.height })
+            // Wait for a view to say how big it is, so the first open is already the right one.
+            wanted.first { it.isNotEmpty() }
+            var highest = 0
+            combine(
+                DesktopMusicVideoQuality.state.map { it.held }.distinctUntilChanged(),
+                wanted.map { sizes -> sizes.values.maxOrNull() ?: 0 },
+            ) { held, tallest ->
+                highest = maxOf(highest, tallest)
+                val autoTarget = AUTO_STEPS.firstOrNull { it >= highest } ?: AUTO_STEPS.last()
+                pickRendition(renditions, held, autoTarget)
+            }
+                .distinctUntilChanged { old, new -> old?.url == new?.url }
+                .collectLatest { stream -> if (stream != null) play(stream) }
         }
-        if (found.isEmpty()) DesktopTrackLog.log("music video: no picture stream for $videoId; showing the cover")
-        renditions = found
-        DesktopMusicVideoQuality.offered(found.map { it.height })
-    }
-    val chosen = remember(renditions, quality.held, autoTarget) {
-        pickRendition(renditions, quality.held, autoTarget)
     }
 
-    LaunchedEffect(chosen?.url) {
-        val stream = chosen ?: return@LaunchedEffect
+    private suspend fun play(stream: StreamResolver.VideoOnly) {
         DesktopMusicVideoQuality.active(stream.height)
         val decoder = DesktopVideoDecoder()
         val opened = withContext(Dispatchers.IO) {
@@ -209,7 +237,7 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
         if (opened.isFailure) {
             DesktopTrackLog.log("music video: ${opened.exceptionOrNull()?.message}")
             withContext(NonCancellable + Dispatchers.IO) { decoder.close() }
-            return@LaunchedEffect
+            return
         }
         // Two bitmaps written in turn and reused for the whole video, so a frame costs a copy into
         // memory that already exists rather than a fresh full-size allocation.
@@ -224,12 +252,7 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
             var pendingPts = -1L
             // Start where the audio already is: a conversion lands mid-song.
             withContext(Dispatchers.IO) { decoder.seekTo(DesktopMusicVideoClock.nowMs()) }
-            while (isActive) {
-                if (paused) {
-                    // Covered by the full-screen copy of this video: hold, and let it decode instead.
-                    delay(PAUSED_POLL_MS)
-                    continue
-                }
+            while (currentCoroutineContext().isActive) {
                 val target = DesktopMusicVideoClock.nowMs()
                 val jumped = DesktopMusicVideoClock.seeks != seeksSeen
                 val drifted = shownPts >= 0 && (target < shownPts - 750 || target > shownPts + 2_500)
@@ -262,25 +285,95 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
                             buffers[slot].installPixels(pixels)
                             buffers[slot].notifyPixelsChanged()
                         }
-                        frame = images[slot]
+                        _frame.value = images[slot]
                         shownPts = pendingPts
                         pendingPts = -1L
                     }
                 }
             }
         } finally {
-            frame = null
             withContext(NonCancellable + Dispatchers.IO) { decoder.close() }
         }
     }
+
+    internal fun stop() = scope.cancel()
+}
+
+/** The open music-video sessions, by video, and the renditions already looked up. */
+internal object DesktopMusicVideoSessions {
+    private val open = HashMap<String, DesktopMusicVideoSession>()
+    private val lingering = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val lookedUp = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<StreamResolver.VideoOnly>>>()
+
+    /** Kept a while after the last view lets go, so a view swap never closes the stream. */
+    private const val LINGER_MS = 2_000L
+
+    /** Stream URLs expire after a few hours; looked up again well before that. */
+    private const val RENDITIONS_TTL_MS = 2L * 60 * 60 * 1000
+
+    fun acquire(videoId: String): DesktopMusicVideoSession = synchronized(open) {
+        val session = open.getOrPut(videoId) { DesktopMusicVideoSession(videoId) }
+        session.holders++
+        session.closing?.cancel()
+        session.closing = null
+        session
+    }
+
+    fun release(session: DesktopMusicVideoSession) {
+        synchronized(open) {
+            session.holders--
+            if (session.holders > 0) return
+            session.closing = lingering.launch {
+                delay(LINGER_MS)
+                synchronized(open) {
+                    if (session.holders > 0) return@launch
+                    if (open[session.videoId] === session) open.remove(session.videoId)
+                }
+                session.stop()
+            }
+        }
+    }
+
+    suspend fun renditionsFor(videoId: String): List<StreamResolver.VideoOnly> {
+        lookedUp[videoId]?.let { (at, list) ->
+            if (System.currentTimeMillis() - at < RENDITIONS_TTL_MS && list.isNotEmpty()) return list
+        }
+        val found = withContext(Dispatchers.IO) {
+            runCatching { StreamResolver.resolveVideoOnly(videoId) }
+                .onFailure { DesktopTrackLog.log("music video: lookup failed for $videoId: ${it.message}") }
+                .getOrDefault(emptyList())
+        }
+        if (found.isNotEmpty()) lookedUp[videoId] = System.currentTimeMillis() to found
+        return found
+    }
+}
+
+/** The player's cover slot, playing the music video in step with the audio. */
+@Composable
+internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modifier: Modifier) {
+    val session = remember(videoId) { DesktopMusicVideoSessions.acquire(videoId) }
+    val holder = remember(videoId) { Any() }
+    DisposableEffect(session) {
+        onDispose {
+            session.want(holder, 0)
+            DesktopMusicVideoSessions.release(session)
+        }
+    }
+    val frame by session.frame.collectAsState()
+    val rendered = frame != null
+    val reportRendered by rememberUpdatedState(spec.onRenderedChanged)
+    val reportCover by rememberUpdatedState(spec.onCoverChanged)
+    val reportFrame by rememberUpdatedState(spec.onFrameCaptured)
+    val presentationAlpha by rememberUpdatedState(spec.presentationAlpha)
 
     LaunchedEffect(rendered) {
         reportRendered(rendered)
         if (rendered) frame?.let(reportFrame)
     }
+    // Already showing when it mounts with a picture to hand (a view swap), so no fade then.
     val alpha by animateFloatAsState(
         targetValue = if (rendered) 1f else 0f,
-        animationSpec = tween(durationMillis = 320),
+        animationSpec = tween(durationMillis = 200),
         label = "musicVideoAlpha",
     )
     LaunchedEffect(Unit) {
@@ -295,7 +388,7 @@ internal fun DesktopMusicVideoView(videoId: String, spec: CanvasVideoSpec, modif
 
     Canvas(
         modifier = modifier
-            .onSizeChanged { viewHeightPx = it.height }
+            .onSizeChanged { session.want(holder, it.height) }
             .graphicsLayer { this.alpha = alpha * presentationAlpha() },
     ) {
         val image = frame ?: return@Canvas

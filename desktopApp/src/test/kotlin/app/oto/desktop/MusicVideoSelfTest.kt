@@ -66,6 +66,10 @@ class MusicVideoSelfTest {
         val video = runBlocking { YtMusicRepository.resolveVideo(rick) }
         println("convert: '${rick.title}' (${rick.videoId}) -> ${video?.videoId} '${video?.title}'")
         assertTrue(video?.videoId == "dQw4w9WgXcQ", "expected the official video, got ${video?.videoId}")
+        // Round trip: back to audio must land on the exact song it started from.
+        val back = runBlocking { YtMusicRepository.resolveAudio(video!!.copy(isVideo = true)) }
+        println("convert back: ${video.videoId} -> ${back.videoId} '${back.title}'")
+        assertTrue(back.videoId == rick.videoId, "round trip landed on ${back.videoId}, not ${rick.videoId}")
         for (query in listOf("Blinding Lights The Weeknd", "Speak to Me Pink Floyd", "Comfortably Numb Pink Floyd")) {
             val track = runCatching { song(query) }.getOrNull() ?: continue
             val found = runBlocking { YtMusicRepository.resolveVideo(track) }

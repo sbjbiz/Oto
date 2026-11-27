@@ -811,7 +811,6 @@ fun NowPlayingScreen(
     val seekToLyric: (Long) -> Unit = { lineTimeMs ->
         onSeek(adjustedLyricsSeekTarget(lineTimeMs, lyricsOffsetMs))
     }
-    val hideVolumeBar by PlayerSettings.hideVolumeBar.collectAsStateWithLifecycle()
     val hideSongStatus by PlayerSettings.hideSongStatus.collectAsStateWithLifecycle()
 
     // Animated cover art: the looping video some labels publish alongside a
@@ -1641,14 +1640,13 @@ fun NowPlayingScreen(
                     // glyphs here; this drawer keeps the two capsules.
                     showLyricsAndQueue = false,
                 )
-                if (!hideVolumeBar) {
-                    Spacer(Modifier.height(20.dp))
-                    VolumeRow(
-                        value = { volume.level.value },
-                        onValueChange = onVolumeChange,
-                        onValueChangeFinished = onVolumeChangeFinished,
-                    )
-                }
+                Spacer(Modifier.height(20.dp))
+                VolumeRow(
+                    value = { volume.level.value },
+                    onValueChange = onVolumeChange,
+                    onValueChangeFinished = onVolumeChangeFinished,
+                )
+                
                 Spacer(Modifier.height(20.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2134,17 +2132,14 @@ fun NowPlayingScreen(
                                     compact = compact,
                                 )
                             },
-                            volume = if (hideVolumeBar) {
-                                null
-                            } else {
-                                {
-                                    VolumeRow(
-                                        value = { volume.level.value },
-                                        onValueChange = onVolumeChange,
-                                        onValueChangeFinished = onVolumeChangeFinished,
-                                    )
-                                }
-                            },
+                            volume = {
+                                VolumeRow(
+                                    value = { volume.level.value },
+                                    onValueChange = onVolumeChange,
+                                    onValueChangeFinished = onVolumeChangeFinished,
+                                )
+                            }
+                            ,
                             // Always on the desktop window: shuffle, repeat (loop) and autoplay.
                             modes = if (compact) {
                                 null
@@ -3820,13 +3815,12 @@ fun NowPlayingScreen(
                     // change the half-player's geometry.
                     Spacer(Modifier.height(12.dp + controlSpread / 2))
 
-                    if (!hideVolumeBar) {
-                        VolumeRow(
-                            value = { volume.level.value },
-                            onValueChange = onVolumeChange,
-                            onValueChangeFinished = onVolumeChangeFinished,
-                        )
-                    } else {
+                    VolumeRow(
+                        value = { volume.level.value },
+                        onValueChange = onVolumeChange,
+                        onValueChangeFinished = onVolumeChangeFinished,
+                    )
+                    
                         Spacer(Modifier.height(VOLUME_ROW_HEIGHT))
                     }
 

@@ -52,7 +52,6 @@ import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.delay
 
 /** How long the controls stay over a playing full-screen video untouched. */
-private const val VIDEO_CONTROLS_IDLE_MS = 3_000L
 
 /** Whether this "canvas" is the track's own music video rather than motion artwork. */
 internal fun CanvasArtwork?.isMusicVideo(): Boolean = this?.url?.startsWith(MUSIC_VIDEO_SCHEME) == true
@@ -216,8 +215,7 @@ private fun QualityRow(name: String, detail: String?, active: Boolean, onSelect:
 
 /**
  * A music video filling the window: the picture letterboxed in black, and over it the title,
- * the corner controls, the transport and the scrubber. Moving the mouse brings the controls up;
- * they stand down again a few seconds after the last movement while it plays.
+ * the corner controls, the transport and the scrubber — always on screen, never timed away.
  */
 @Composable
 internal fun FullscreenVideoPlayer(
@@ -230,38 +228,14 @@ internal fun FullscreenVideoPlayer(
     transport: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var controlsShown by remember { mutableStateOf(true) }
-    var touches by remember { mutableIntStateOf(0) }
-    LaunchedEffect(controlsShown, isPlaying, touches) {
-        if (controlsShown && isPlaying) {
-            delay(VIDEO_CONTROLS_IDLE_MS)
-            controlsShown = false
-        }
-    }
-
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black)
-            // Any pointer movement or press wakes the controls and starts the idle timer over.
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        awaitPointerEvent(PointerEventPass.Initial)
-                        controlsShown = true
-                        touches++
-                    }
-                }
-            },
+            .background(Color.Black),
     ) {
         video(Modifier.fillMaxSize())
 
-        AnimatedVisibility(
-            visible = controlsShown,
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(300)),
-            modifier = Modifier.fillMaxSize(),
-        ) {
+        run {
             Box(
                 Modifier
                     .fillMaxSize()

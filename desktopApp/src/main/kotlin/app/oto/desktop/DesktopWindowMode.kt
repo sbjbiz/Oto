@@ -107,6 +107,12 @@ internal object DesktopWindowMode {
 
     /** Takes the window's word for how it is sitting, rather than this object's. */
     fun adopt(placement: WindowPlacement) {
+        // In true full screen the window is a borderless popup the size of the monitor, so Windows
+        // reports a maximized window as no longer maximized. Taking that at its word ended full
+        // screen in this object while the screen was still covered — caption buttons back, layout
+        // off by the overshoot, and F11 then "doing nothing". The placement before full screen is
+        // what comes back on the way out, so nothing is lost by not listening here.
+        if (_fullScreen.value) return
         if (placement == _placement.value) return
         if (placement == WindowPlacement.Floating) _fullScreen.value = false
         set(placement)
