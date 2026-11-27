@@ -1646,7 +1646,6 @@ fun NowPlayingScreen(
                     onValueChange = onVolumeChange,
                     onValueChangeFinished = onVolumeChangeFinished,
                 )
-                
                 Spacer(Modifier.height(20.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2138,8 +2137,7 @@ fun NowPlayingScreen(
                                     onValueChange = onVolumeChange,
                                     onValueChangeFinished = onVolumeChangeFinished,
                                 )
-                            }
-                            ,
+                            },
                             // Always on the desktop window: shuffle, repeat (loop) and autoplay.
                             modes = if (compact) {
                                 null
@@ -3820,9 +3818,6 @@ fun NowPlayingScreen(
                         onValueChange = onVolumeChange,
                         onValueChangeFinished = onVolumeChangeFinished,
                     )
-                    
-                        Spacer(Modifier.height(VOLUME_ROW_HEIGHT))
-                    }
 
                     // The volume slider already has 13dp below its drawn track.
                     // Balance that invisible inset with the caption gap below the icons.

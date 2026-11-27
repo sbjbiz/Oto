@@ -1,5 +1,7 @@
 package app.oto.desktop
 
+import app.oto.data.innertube.StreamResolver
+
 import app.oto.data.model.Song
 import app.oto.data.settings.AutomixPerformanceMode
 import app.oto.data.settings.MixBlend
@@ -307,8 +309,17 @@ class DesktopPlaybackEngine(
         if (retryingSongId != song.videoId) {
             retryingSongId = song.videoId
             DesktopTrackLog.log("could not decode '${song.title}' from ${DesktopMusicSources.sourceNameFor(stream)}: ${failure.message}")
-            stream.sourceId?.let { refusedSources[song.videoId] = it }
-            loadInternal(song, playWhenReady, excludedSourceId = stream.sourceId, priorFailure = failure)
+            if (stream.sourceId == YOUTUBE_SOURCE_ID) {
+                // YouTube is the one source every track has, so it is never struck off: striking
+                // it off was how a song that played earlier came back as "can't play" for the rest
+                // of the session, and how one network blip left every track skipping. Its URL
+                // simply goes stale — so the retry asks for a fresh one instead.
+                StreamResolver.forgetUrl(song.videoId)
+                loadInternal(song, playWhenReady, priorFailure = failure)
+            } else {
+                stream.sourceId?.let { refusedSources[song.videoId] = it }
+                loadInternal(song, playWhenReady, excludedSourceId = stream.sourceId, priorFailure = failure)
+            }
         } else {
             _state.value = DesktopPlaybackState(
                 song = song,
@@ -1953,3 +1964,6 @@ class DesktopPlaybackEngine(
         private const val TEXTURE_TAIL_SECONDS = 0.6
     }
 }
+
+/** The id [DesktopStreamClient] stamps on YouTube streams. */
+private const val YOUTUBE_SOURCE_ID = "youtube"

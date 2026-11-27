@@ -834,6 +834,15 @@ object StreamResolver {
      * Called from the playback path — see
      * [ChunkedDataSource][app.oto.playback.ChunkedDataSource].
      */
+    /**
+     * Drops the URL held for [videoId], so the next [resolve] mints a fresh one. For a player
+     * whose decoder could not open the held URL — expired, or cut off mid-request — where
+     * replaying the same URL would only fail the same way.
+     */
+    fun forgetUrl(videoId: String) {
+        recent.remove(videoId)
+    }
+
     fun onPlaybackRefused(url: String, responseCode: Int) {
         if (responseCode !in REFUSAL_CODES) return
         // Only googlevideo's URLs say anything about the client that minted
