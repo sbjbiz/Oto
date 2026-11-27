@@ -78,6 +78,40 @@ class MusicVideoSelfTest {
     }
 
     @Test
+    fun convertToVideoAcrossPopularSongs() {
+        if (System.getenv("OTO_NET_TEST") != "1") return
+        val queries = listOf(
+            "One Kiss Calvin Harris", "Queen St twentythree", "Levitating Dua Lipa", "Shape of You Ed Sheeran",
+            "Flowers Miley Cyrus", "As It Was Harry Styles", "Espresso Sabrina Carpenter",
+            "Die With A Smile Lady Gaga", "APT. ROSE Bruno Mars", "BIRDS OF A FEATHER Billie Eilish",
+            "Cruel Summer Taylor Swift", "Despacito Luis Fonsi", "TUSA Karol G", "Starboy The Weeknd",
+            "Too Many Nights Metro Boomin", "BbY WOW Karol G",
+        )
+        var found = 0
+        for (q in queries) {
+            val song = runCatching {
+                runBlocking { YtMusicRepository.search(q, SearchFilter.SONGS) }.getOrThrow()
+                    .filterIsInstance<SearchResult.Track>().map { it.song }.first { !it.isVideo }
+            }.getOrNull() ?: run { println("diag '$q': no song row"); continue }
+            val target = app.oto.data.sources.TrackMatcher.targetOf(song)
+            val videos = runBlocking { YtMusicRepository.search(app.oto.data.sources.TrackMatcher.queries(target).first(), SearchFilter.VIDEOS) }
+                .getOrNull().orEmpty().filterIsInstance<SearchResult.Track>().map { it.song }.take(6)
+            val passing = app.oto.data.sources.TrackMatcher.musicVideoCandidates(videos, target)
+            println("diag '${song.title}' by '${song.artist}' (${song.durationText}): ${videos.size} video rows, ${passing.size} pass the title/artist check")
+            videos.forEach { v ->
+                val type = runCatching {
+                    runBlocking { app.oto.data.innertube.InnertubeParser.parseVideoType(app.oto.data.innertube.Innertube.next(v.videoId), v.videoId) }
+                }.getOrNull()
+                println("    ${if (v in passing) "PASS" else "    "} ${v.videoId} '${v.title}' by '${v.artist}' type=$type")
+            }
+            val result = runBlocking { YtMusicRepository.resolveVideo(song) }
+            if (result != null) found++
+            println("    -> ${result?.videoId ?: "NO VIDEO"}")
+        }
+        println("diag: $found of ${queries.size} converted")
+    }
+
+    @Test
     fun homeLoadsWithoutAnAccount() {
         if (System.getenv("OTO_NET_TEST") != "1") return
         val home = runBlocking { YtMusicRepository.home() }.getOrThrow()
