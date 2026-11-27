@@ -92,21 +92,31 @@ internal object DesktopVersionAligner {
             DesktopTrackLog.log("align: could not fetch audio to compare '${source.title}' with ${target.videoId}")
             return@withContext Result(null, 0.0, measured = false)
         }
+        val result = compareSamples(sourcePcm, targetPcm)
+        DesktopTrackLog.log(
+            "align: '${source.title}' -> ${target.videoId}: confidence=${"%.2f".format(result.confidence)}, " +
+                "offset=${result.offsetMs ?: "none"}",
+        )
+        result.offsetMs?.let { offset ->
+            offsets[source.videoId to target.videoId] = offset
+            offsets[target.videoId to source.videoId] = -offset
+        }
+        result
+    }
+
+    /** The comparison itself, on two openings already decoded to mono floats at [RATE]. */
+    internal fun compareSamples(sourcePcm: FloatArray, targetPcm: FloatArray): Result {
         val correlation = crossCorrelate(envelope(sourcePcm), envelope(targetPcm))
         val pinned = correlation.lagFrames == correlation.floor || correlation.lagFrames == correlation.ceiling
         val offset = (correlation.lagFrames * HOP_MS).toLong()
-        DesktopTrackLog.log(
-            "align: '${source.title}' -> ${target.videoId}: confidence=${"%.2f".format(correlation.confidence)}, " +
-                "offset=${offset}ms${if (pinned) " (at the edge)" else ""}",
-        )
-        if (correlation.confidence >= MIN_CONFIDENCE && !pinned) {
-            offsets[source.videoId to target.videoId] = offset
-            offsets[target.videoId to source.videoId] = -offset
+        return if (correlation.confidence >= MIN_CONFIDENCE && !pinned) {
             Result(offset, correlation.confidence, measured = true)
         } else {
             Result(null, correlation.confidence, measured = true)
         }
     }
+
+    internal const val SAMPLE_RATE = RATE
 
     /** The first [seconds] of [song] as mono floats at [RATE], or null if it cannot be had. */
     private suspend fun head(song: Song, seconds: Double): FloatArray? {

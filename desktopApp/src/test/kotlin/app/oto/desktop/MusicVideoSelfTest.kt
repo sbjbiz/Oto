@@ -7,6 +7,7 @@ import app.oto.data.innertube.potoken.PoTokenGenerator
 import app.oto.data.innertube.StreamResolver
 import app.oto.data.model.SearchFilter
 import app.oto.data.model.SearchResult
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.ColorAlphaType
@@ -141,6 +142,36 @@ class MusicVideoSelfTest {
         val home = runBlocking { YtMusicRepository.home() }.getOrThrow()
         home.shelves.forEach { println("home shelf: ${it.title} (${it.items.size})") }
         assertTrue(home.shelves.isNotEmpty(), "home came back empty")
+    }
+
+    @Test
+    fun videoPipelineKeepsUpWithTheClock() {
+        if (System.getenv("OTO_NET_TEST") != "1") return
+        // The audio clock, played by hand: 30 s into the song, playing.
+        val startNanos = System.nanoTime()
+        DesktopMusicVideoClock.update(30_000, startNanos, playing = true, seeks = 1)
+        val session = DesktopMusicVideoSessions.acquire("dQw4w9WgXcQ")
+        val holder = Any()
+        session.want(holder, 720)
+        try {
+            runBlocking {
+                kotlinx.coroutines.withTimeout(30_000) { session.frame.first { it != null } }
+                val shown = HashSet<Any>()
+                var changes = 0
+                var last: Any? = null
+                val until = System.currentTimeMillis() + 4_000
+                while (System.currentTimeMillis() < until) {
+                    val now = session.frame.value
+                    if (now !== last) { changes++; last = now }
+                    kotlinx.coroutines.delay(2)
+                }
+                println("pipeline: $changes frames shown in 4 s, crop=${session.crop.value}, aspect=${DesktopMusicVideoSessions.aspect.value}")
+                assertTrue(changes >= 60, "only $changes frames in 4 s")
+            }
+        } finally {
+            session.want(holder, 0)
+            DesktopMusicVideoSessions.release(session)
+        }
     }
 
     @Test
