@@ -9,6 +9,7 @@ import org.bytedeco.ffmpeg.global.avutil.AV_HWDEVICE_TYPE_NONE
 import org.bytedeco.ffmpeg.global.avutil.av_buffer_unref
 import org.bytedeco.ffmpeg.global.avutil.av_hwdevice_ctx_create
 import org.bytedeco.ffmpeg.global.avutil.av_hwdevice_find_type_by_name
+import org.bytedeco.javacpp.BytePointer
 import org.bytedeco.javacpp.PointerPointer
 
 /**
@@ -51,7 +52,7 @@ internal object DesktopVideoHardware {
         }
         val device = PointerPointer<AVBufferRef>(1)
         val opened = runCatching {
-            av_hwdevice_ctx_create(device, type, null as String?, null as AVDictionary?, 0) >= 0
+            av_hwdevice_ctx_create(device, type, null as BytePointer?, null as AVDictionary?, 0) >= 0
         }.getOrDefault(false)
         if (opened) av_buffer_unref(device)
         device.deallocate()

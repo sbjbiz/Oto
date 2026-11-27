@@ -774,7 +774,7 @@ internal class DesktopVideoDecoder {
         }
         if (pixelFormat < 0) return null
         val device = PointerPointer<AVBufferRef>(1)
-        if (av_hwdevice_ctx_create(device, type, null as String?, null as AVDictionary?, 0) < 0) {
+        if (av_hwdevice_ctx_create(device, type, null as BytePointer?, null as AVDictionary?, 0) < 0) {
             device.deallocate()
             return null
         }
